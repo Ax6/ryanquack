@@ -1,0 +1,54 @@
+{
+  "items": [
+    {
+      "tripId": "483e3cff-39cd-4fb5-bb3d-b3cba029441b",
+      "productId": "894799031",
+      "type": "flight",
+      "payload": {
+        "booking": {
+          "bookingId": 894799031,
+          "pnr": "XZD8XM"
+        }
+      },
+      "rawBooking": {
+        "bookingId": 894799031,
+        "flights": [
+          {
+            "flightNumber": "FR2803",
+            "isCancelled": false
+          }
+        ],
+        "checkins": [
+          {
+            "status": "nocheckin"
+          }
+        ]
+      }
+    },
+    {
+      "tripId": "37fa7064-b54b-4bf0-97f1-40189b327922",
+      "productId": "893376763",
+      "type": "flight",
+      "payload": {
+        "booking": {
+          "bookingId": 893376763,
+          "pnr": "R5B4YX"
+        }
+      },
+      "rawBooking": {
+        "bookingId": 893376763,
+        "flights": [
+          {
+            "flightNumber": "FR9951",
+            "isCancelled": false
+          }
+        ],
+        "checkins": [
+          {
+            "status": "documentsadded"
+          }
+        ]
+      }
+    }
+  ]
+}

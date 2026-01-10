@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "lib": [
+      "DOM",
+      "ES2020"
+    ],
+    "rootDir": "src",
+    "outDir": "dist/tmp",
+    "strict": false,
+    "skipLibCheck": true,
+    "sourceMap": false,
+    "types": [
+      "webextension-polyfill",
+      "chrome"
+    ]
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}

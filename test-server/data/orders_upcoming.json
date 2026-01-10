@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "tripId": "upcoming-only",
+      "productId": "111",
+      "type": "flight",
+      "payload": { "booking": { "bookingId": 111, "pnr": "UPCMNG" } },
+      "rawBooking": {
+        "bookingId": 111,
+        "recordLocator": "UPCMNG",
+        "flights": [{ "journeyNum": 0, "origin": "DUB", "destination": "STN", "flightNumber": "FR101", "times": { "departUTC": "2026-06-01T10:00:00Z" } }],
+        "checkins": [{ "journeyNum": 0, "status": "nocheckin" }]
+      }
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Ryanair Boarding Pass Helper",
+  "version": "0.1.0",
+  "description": "Fetches boarding pass data from Ryanair and prepares downloads.",
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "cookies",
+    "downloads",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://*.ryanair.com/*",
+    "https://mntappbp.ryanair.com/*",
+    "https://mawbp.ryanair.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.ryanair.com/*"
+      ],
+      "js": [
+        "src/content/index.ts"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "Boarding Pass",
+    "default_popup": "src/popup/popup.html"
+  }
+}

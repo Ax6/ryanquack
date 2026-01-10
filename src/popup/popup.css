@@ -1,0 +1,192 @@
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 12px;
+  background: #f6f1e7;
+  color: #2b2b2b;
+  min-width: 280px;
+}
+
+.app-header {
+  background: #073590;
+  color: #f6c453;
+  padding: 10px 12px;
+  margin: -12px -12px 12px -12px;
+  border-bottom: 1px solid #2b2b2b;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.header-title {
+  font-weight: 800;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-tagline {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.9;
+  font-style: italic;
+}
+
+button {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #2b2b2b;
+  background: #f6c453;
+  color: #2b2b2b;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px; /* Slight rounded corners */
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+#status {
+  margin: 12px auto 0 auto;
+  font-size: 10px;
+  opacity: 0.6;
+  text-align: center;
+  max-width: 150px;
+  line-height: 1.4;
+}
+
+#passes {
+  display: grid;
+  gap: 16px; /* Increased gap */
+  margin-top: 12px;
+}
+
+.pass {
+  border: 1px solid #2b2b2b;
+  padding: 16px;
+  background: #ffffff;
+  box-shadow: 3px 3px 0px rgba(0,0,0,0.1);
+  border-radius: 8px;
+  transition: transform 0.1s ease;
+}
+
+.flight-summary {
+  border: 1px dashed #2b2b2b;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.3); /* Semi-transparent */
+  border-radius: 8px;
+  opacity: 0.8;
+}
+
+.pass-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.pass-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pass-meta {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+}
+
+.pass-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.pass-qr:not(:empty) {
+  margin-top: 12px;
+  display: grid;
+  place-items: center;
+  padding-top: 12px;
+  border-top: 1px dashed #ccc;
+}
+
+.pass-qr canvas {
+  width: 180px;
+  height: 180px;
+  image-rendering: pixelated;
+}
+
+/* Ticket Detail View */
+.ticket-detail {
+  width: 100%;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.ticket-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.ticket-label {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+}
+
+.ticket-value {
+  font-weight: 600;
+}
+
+.ticket-route {
+  font-size: 16px;
+  font-weight: 800;
+  text-align: center;
+  margin-bottom: 12px;
+  color: #073590;
+}
+
+.ticket-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #eee;
+}
+
+.ticket-actions button {
+  width: auto;
+  padding: 4px 8px;
+  font-size: 10px;
+  background: transparent;
+  border: 1px solid #ccc;
+  color: #666;
+  font-weight: 400;
+  border-radius: 4px;
+}
+
+.ticket-actions button:hover {
+  background: #f0f0f0;
+  color: #333;
+  border-color: #999;
+}
+
+.ticket-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+  background: #f9f9f9;
+  padding: 8px;
+  border-radius: 4px;
+}

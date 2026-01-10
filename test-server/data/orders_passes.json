@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "tripId": "ready-only",
+      "productId": "444",
+      "type": "flight",
+      "payload": { "booking": { "bookingId": 444, "pnr": "READY1" } },
+      "rawBooking": {
+        "bookingId": 444,
+        "recordLocator": "READY1",
+        "flights": [{ "journeyNum": 0, "origin": "PSA", "destination": "DUB", "flightNumber": "FR404", "times": { "departUTC": "2026-01-12T10:00:00Z" } }],
+        "checkins": [{ "journeyNum": 0, "status": "checkedin" }]
+      }
+    }
+  ]
+}

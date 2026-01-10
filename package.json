@@ -1,0 +1,27 @@
+{
+  "name": "ryanquack",
+  "private": true,
+  "scripts": {
+    "build": "npm run build:chrome && npm run build:firefox",
+    "build:chrome": "TARGET=chrome vite build",
+    "build:chrome:mock": "TARGET=chrome MOCK=true vite build",
+    "build:firefox": "TARGET=firefox vite build",
+    "build:firefox:mock": "TARGET=firefox MOCK=true vite build",
+    "dev": "vite",
+    "mock": "node test-server/server.mjs",
+    "icons": "./scripts/generate-icons.sh",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.33",
+    "@types/chrome": "^0.1.33",
+    "@types/webextension-polyfill": "^0.12.4",
+    "typescript": "^5.4.5",
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "bwip-js": "^4.8.0",
+    "webextension-polyfill": "^0.12.0"
+  }
+}

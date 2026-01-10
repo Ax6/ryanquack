@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "tripId": "mixed-upcoming",
+      "productId": "222",
+      "type": "flight",
+      "payload": { "booking": { "bookingId": 222, "pnr": "MIXED1" } },
+      "rawBooking": {
+        "bookingId": 222,
+        "recordLocator": "MIXED1",
+        "flights": [{ "journeyNum": 0, "origin": "DUB", "destination": "STN", "flightNumber": "FR202", "times": { "departUTC": "2026-07-01T10:00:00Z" } }],
+        "checkins": [{ "journeyNum": 0, "status": "nocheckin" }]
+      }
+    },
+    {
+      "tripId": "mixed-ready",
+      "productId": "333",
+      "type": "flight",
+      "payload": { "booking": { "bookingId": 333, "pnr": "MIXED2" } },
+      "rawBooking": {
+        "bookingId": 333,
+        "recordLocator": "MIXED2",
+        "flights": [{ "journeyNum": 0, "origin": "STN", "destination": "PSA", "flightNumber": "FR303", "times": { "departUTC": "2026-01-15T10:00:00Z" } }],
+        "checkins": [{ "journeyNum": 0, "status": "checkedin" }]
+      }
+    }
+  ]
+}

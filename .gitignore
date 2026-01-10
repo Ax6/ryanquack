@@ -1,0 +1,15 @@
+# OS & IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Build and packages
+node_modules/
+dist/
+tmp/
+
+# Data & Secrets (CRITICAL)
+raw-data/
+recordings/
+*.mitm
+*.ryanair.com/

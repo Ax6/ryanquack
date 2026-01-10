@@ -1,0 +1,67 @@
+[
+  {
+    "passId": "MOCK01_DUBSTN_FR1234_10_ADT",
+    "hash": "00000000000000000000000000000000",
+    "pnr": "MOCK01",
+    "isConnectingFlight": false,
+    "paxNumber": 0,
+    "paxType": "ADT",
+    "name": {
+      "title": "MR",
+      "first": "Ryan",
+      "last": "Quack"
+    },
+    "barcode": "M1QUACK/RYAN           MOCK01 DUBSTNFR 1234 362Y011C0010 349>5181W 5361BFR 04050855460012A0000000000000 0                          NN",
+    "departure": {
+      "code": "DUB",
+      "name": "Dublin",
+      "date": "2026-01-15T06:00:00",
+      "dateUTC": "2026-01-15T06:00:00Z",
+      "dateUTCOffset": "UTC+0000",
+      "epoch": 1768456800000
+    },
+    "arrival": {
+      "code": "STN",
+      "name": "London Stansted",
+      "date": "2026-01-15T07:15:00",
+      "dateUTC": "2026-01-15T07:15:00Z",
+      "dateUTCOffset": "UTC+0000",
+      "epoch": 1768461300000
+    },
+    "ssrsDetails": [
+      {
+        "code": "CBAG",
+        "qty": 1,
+        "note": "[{\"o\": \"D\", \"c\": \"EUR\", \"a\": 19.99}]"
+      }
+    ],
+    "seat": {
+      "designator": "1A",
+      "location": "Window",
+      "paid": true,
+      "door": 0,
+      "isPrime": true
+    },
+    "priority": true,
+    "fast": true,
+    "leisurePlus": false,
+    "timeSaver": false,
+    "businessPlus": false,
+    "familyPlus": false,
+    "regular": false,
+    "sequence": 10,
+    "boardingTime": "2026-01-15T05:30:00",
+    "boardingTimeEpoch": 1768455000000,
+    "flight": {
+      "carrierCode": "FR",
+      "number": "1234",
+      "label": "FR1234",
+      "operatedBy": "Ryanair"
+    },
+    "ticketType": "RegularTicket",
+    "discount": "",
+    "docNationality": "IE",
+    "docCountryOfIssue": "IE",
+    "authorizationStatus": "NONE"
+  }
+]
