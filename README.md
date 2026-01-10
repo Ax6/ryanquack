@@ -75,7 +75,7 @@ Don't have a flight booked? No problem. Find included a test Server to simulate 
 
 ### 🏗️ Production Build
 
-To build for real-world usage (hitting real Ryanair APIs):
+To build the extension for real-world usage:
 
 ```bash
 # Build for both browsers
@@ -84,6 +84,12 @@ npm run build
 # Or specific targets
 npm run build:chrome
 npm run build:firefox
+```
+
+To package the extension:
+
+```bash
+npm run package
 ```
 
 ### ✅ Testing
