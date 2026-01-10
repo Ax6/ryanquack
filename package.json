@@ -10,7 +10,8 @@
     "dev": "vite",
     "mock": "node test-server/server.mjs",
     "icons": "./scripts/generate-icons.sh",
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "npm run build && (cd dist/chrome && zip -r ../chrome-extension.zip .) && (cd dist/firefox && zip -r ../firefox-extension.zip .)"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.33",
