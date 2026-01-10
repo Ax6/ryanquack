@@ -1,6 +1,7 @@
 {
   "name": "ryanquack",
   "private": true,
+  "license": "GPL-3.0-only",
   "scripts": {
     "build": "npm run build:chrome && npm run build:firefox",
     "build:chrome": "TARGET=chrome vite build",
