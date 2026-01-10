@@ -1,75 +1,112 @@
-# ryanquack 🦆
+<div align="center">
+  <img src="public/icon.svg" height="120" alt="RyanQuack Logo" />
+  <h1>RyanQuack 🦆</h1>
+  <p>
+    <strong>"Ryanair says I need the app. Well fuck that. I'll get the ticket my way."</strong>
+  </p>
+  <p>
+    A modern, open-source browser extension to fetch, display, and download Ryanair boarding passes on your desktop. No mobile app required.
+  </p>
+</div>
 
-> Ryanair says I need the app. Well fuck that. I'll get the ticket my way.
+---
 
-A modern browser extension to fetch, display, and download Ryanair boarding passes without needing the official mobile app.
+## 🧐 Why?
 
-## Features
+Ryanair often restricts mobile boarding passes to their native app, forcing users to install it or pay for printing. **RyanQuack** paddles upstream by fetching your booking details directly from their API and rendering the official Aztec barcode right in your browser.
 
-- **Aztec Code Generation**: Displays the official boarding pass barcode directly in the popup.
-- **Apple Wallet Support**: Download `.pkpass` files for your mobile wallet.
-- **Cross-Browser**: Supports Chrome (Manifest V3) and Firefox (Manifest V3).
-- **Offline Testing**: Includes a built-in mock server for development without active bookings.
+It's lightweight, privacy-focused (data stays local), and works offline once fetched.
 
-## Development
+## ✨ Features
 
-### Prerequisites
+- **🎟️ Instant Boarding Passes:** Renders the official Aztec barcode usable at the gate.
+- **🍏 Apple Wallet Export:** Downloads `.pkpass` files for your iPhone wallet.
+- **🖼️ Image Export:** Generates a high-res PNG of your ticket for sharing or printing.
+- **📋 Clipboard Support:** Copy the ticket image directly to your clipboard.
+- **✈️ Flight Summaries:** View upcoming flights even before check-in opens.
+- **🔒 Secure:** All data processing happens locally in your browser.
 
-- [Node.js](https://nodejs.org/) (v18+)
-- npm
+## 🚀 Installation
 
-### Setup
+### From Source (Developer Mode)
 
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+1.  **Clone the nest:**
+    ```bash
+    git clone https://github.com/yourusername/ryanquack.git
+    cd ryanquack
+    ```
+2.  **Install dependencies:**
+    ```bash
+    npm install
+    ```
+3.  **Hatch the build:**
+    ```bash
+    npm run build
+    ```
+4.  **Load into Browser:**
+    *   **Chrome:** Go to `chrome://extensions`, enable **Developer Mode**, click **Load Unpacked**, and select `dist/chrome`.
+    *   **Firefox:** Go to `about:debugging`, click **This Firefox**, then **Load Temporary Add-on**, and select `dist/firefox/manifest.json`.
 
-### Mock Testing
+---
 
-To test the extension without a real flight:
+## 🛠️ Development
 
-1. Start the mock server:
-   ```bash
-   npm run mock
-   ```
-2. Build the extension in mock mode:
-   ```bash
-   # For Chrome/Chromium
-   npm run build:chrome:mock
+This project uses **Vite**, **TypeScript**, and **Manifest V3** for both Chrome and Firefox.
 
-   # For Firefox
-   npm run build:firefox:mock
-   ```
-3. Load the unpacked extension from `dist/chrome-mock` or `dist/firefox-mock`.
+### 🧪 Mock Server (The Playground)
 
-## Building for Production
+Don't have a flight booked? No problem. We included a powerful Mock Server to simulate various scenarios (Login, No Flights, Checked-In, etc.).
 
-To build the extension for real usage:
+1.  **Start the Mock Server:**
+    ```bash
+    npm run mock
+    ```
+    > 🦆 **Tip:** Open [http://localhost:3000](http://localhost:3000) to access the **Scenario Dashboard** and control the mock data dynamically!
+
+2.  **Build & Watch (Mock Mode):**
+    ```bash
+    # For Chrome
+    npm run build:chrome:mock
+
+    # For Firefox
+    npm run build:firefox:mock
+    ```
+    *These builds automatically point API requests to `localhost:3000`.*
+
+### 🏗️ Production Build
+
+To build for real-world usage (hitting real Ryanair APIs):
 
 ```bash
-# Build both
+# Build for both browsers
 npm run build
 
-# Build specific
+# Or specific targets
 npm run build:chrome
 npm run build:firefox
 ```
 
-The output will be in `dist/chrome` and `dist/firefox`.
+### ✅ Testing
 
-## Testing
-
-The project uses [Vitest](https://vitest.dev/) for unit testing core business logic and API handling.
+We use **Vitest** to ensure our logic is sound.
 
 ```bash
 npm test
 ```
 
-## Architecture
+## 🏗️ Architecture
 
-- **Bundler**: [Vite](https://vitejs.dev/) + [@crxjs/vite-plugin](https://crxjs.ai/vite-plugin)
-- **Language**: TypeScript
-- **Polyfill**: [webextension-polyfill](https://github.com/mozilla/webextension-polyfill) for cross-browser Promise-based API support.
-- **Barcode**: [bwip-js](https://github.com/metafloor/bwip-js) for Aztec code generation.
+*   **Bundler:** [Vite](https://vitejs.dev/) + [@crxjs/vite-plugin](https://crxjs.ai/vite-plugin)
+*   **Framework:** Vanilla TypeScript (No heavy UI frameworks).
+*   **Barcode:** [bwip-js](https://github.com/metafloor/bwip-js) for Aztec rendering.
+*   **Compatibility:** Uses `webextension-polyfill` to support both Chrome and Firefox using standard Promise-based APIs.
+
+## ⚠️ Disclaimer
+
+This project is for educational purposes only. It is not affiliated with, endorsed by, or connected to Ryanair. Use at your own risk. Always ensure you have a backup plan when traveling.
+
+---
+
+<div align="center">
+  <sub>Made with 🧡 and 🦆 by Aaron Russo</sub>
+</div>
