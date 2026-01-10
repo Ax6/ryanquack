@@ -54,11 +54,16 @@ browser.runtime.onMessage.addListener((message, sender) => {
         downloadPayloads = passes.map(buildDownloadPayload);
       }
 
-      return {
+      const result = {
         flights,
         passes,
         downloadPayloads
       };
+
+      // Cache for offline support
+      browser.storage.local.set({ cachedPasses: result });
+
+      return result;
     });
   }
 

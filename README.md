@@ -2,10 +2,10 @@
   <img src="public/icon.svg" height="120" alt="RyanQuack Logo" />
   <h1>RyanQuack 🦆</h1>
   <p>
-    <strong>"Ryanair says I need the app. Well fuck that. I'll get the ticket my way."</strong>
+    <strong>"Ryanair says I need the app. Well quack that. I'll get the ticket my way."</strong>
   </p>
   <p>
-    A modern, open-source browser extension to fetch, display, and download Ryanair boarding passes on your desktop. No mobile app required.
+    An open-source browser extension to fetch, display, and download Ryanair boarding passes on your browser. No mobile app required.
   </p>
 </div>
 
@@ -13,9 +13,9 @@
 
 ## 🧐 Why?
 
-Ryanair often restricts mobile boarding passes to their native app, forcing users to install it or pay for printing. **RyanQuack** paddles upstream by fetching your booking details directly from their API and rendering the official Aztec barcode right in your browser.
+Ryanair has decided that you can download boarding passes only from their mobile app, this way they can squeeze all that sweet tracking data. I don't need the app. So **RyanQuack** paddles upstream by fetching your booking details directly from their website and rendering flight tickets right in your browser.
 
-It's lightweight, privacy-focused (data stays local), and works offline once fetched.
+It's lightweight, privacy-focused (your data stays local), and works offline once fetched.
 
 ## ✨ Features
 
@@ -55,7 +55,7 @@ This project uses **Vite**, **TypeScript**, and **Manifest V3** for both Chrome 
 
 ### 🧪 Mock Server (The Playground)
 
-Don't have a flight booked? No problem. We included a powerful Mock Server to simulate various scenarios (Login, No Flights, Checked-In, etc.).
+Don't have a flight booked? No problem. Find included a test Server to simulate various scenarios (Login, No Flights, Checked-In, etc.).
 
 1.  **Start the Mock Server:**
     ```bash
@@ -88,7 +88,7 @@ npm run build:firefox
 
 ### ✅ Testing
 
-We use **Vitest** to ensure our logic is sound.
+Use **Vitest** to ensure logic is sound.
 
 ```bash
 npm test

@@ -426,6 +426,30 @@ function renderFlights(flights) {
 async function fetchPasses() {
   setStatus("Paddling to Ryanair...");
 
+  // 1. Try Cache First (Offline Mode)
+  try {
+    const cache = await browser.storage.local.get("cachedPasses");
+    if (cache && cache.cachedPasses) {
+      const { passes, downloadPayloads, flights } = cache.cachedPasses;
+      
+      // Clear before rendering cache
+      passesEl.innerHTML = "";
+      
+      if (passes.length > 0) {
+        renderPasses(passes, downloadPayloads);
+      }
+      const upcoming = flights.filter(f => !f.isReady);
+      if (upcoming.length > 0) {
+        renderFlights(upcoming);
+      }
+      
+      setStatus("Offline Mode ☁️");
+    }
+  } catch (e) {
+    console.error("Cache read error", e);
+  }
+
+  // 2. Network Fetch
   try {
     const res = (await browser.runtime.sendMessage({
       type: "RYQ_FETCH_BOARDING_PASSES",
@@ -462,7 +486,12 @@ async function fetchPasses() {
       // This case is largely handled by the flight check above, but as a fallback:
       setStatus("Nothing to quack.");
     } else {
-      setStatus(`Error: ${msg}`);
+      // If we have content (cached), show a friendly offline message instead of the error
+      if (passesEl.innerHTML !== "") {
+        setStatus("Offline (Cached) ☁️");
+      } else {
+        setStatus(`Error: ${msg}`);
+      }
     }
   }
 }
