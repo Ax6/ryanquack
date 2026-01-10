@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="public/icon.svg" height="120" alt="RyanQuack Logo" />
+  <img src="public/icon.png" height="120" alt="RyanQuack Logo" />
   <h1>RyanQuack 🦆</h1>
   <p>
     <strong>"Ryanair says I need the app. Well quack that. I'll get the ticket my way."</strong>
