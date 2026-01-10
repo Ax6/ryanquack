@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Ryanair Boarding Pass Helper",
+  "name": "RyanQuack",
   "version": "0.1.0",
   "description": "Fetches boarding pass data from Ryanair and prepares downloads.",
   "icons": {
