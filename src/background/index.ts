@@ -79,13 +79,18 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "RYQ_DOWNLOAD_PASS") {
     return downloadPass(message.payload, API_DOWNLOAD_PASS_URL)
       .then(async (blob) => {
-        const url = URL.createObjectURL(blob);
+        const reader = new FileReader();
+        const dataUrl = await new Promise((resolve, reject) => {
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+
         await browser.downloads.download({
-          url,
+          url: dataUrl as string,
           filename: "boarding-pass.pkpass",
           saveAs: false,
         });
-        URL.revokeObjectURL(url);
       });
   }
 });

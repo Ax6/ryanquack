@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "RyanQuack",
-  "version": "0.1.0",
-  "description": "Fetches boarding pass data from Ryanair and prepares downloads.",
+  "version": "0.1.1",
+  "description": "Fetch, display, and download your Ryanair boarding passes directly in your browser. No app needed. Privacy-focused and open source.",
   "icons": {
     "16": "icon16.png",
     "32": "icon32.png",
