@@ -90,4 +90,38 @@ describe("Ryanair Logic", () => {
     const readyIds = filterReadyBookings(mockFlights as any);
     expect(readyIds).toEqual([102, 103]);
   });
+
+  it("should extract check-in window times", () => {
+    const mockOrders = {
+      items: [
+        {
+          rawBooking: {
+            bookingId: 200,
+            recordLocator: "PNR2",
+            flights: [
+              { 
+                journeyNum: 0, 
+                origin: "BER", 
+                destination: "MAD", 
+                flightNumber: "FR99", 
+                times: { departUTC: "2026-06-01T10:00:00Z" },
+                checkInOpenUTC: "2026-05-01T10:00:00Z",
+                checkInCloseUTC: "2026-06-01T08:00:00Z"
+              }
+            ],
+            checkins: [
+              { journeyNum: 0, status: "nocheckin" }
+            ]
+          }
+        }
+      ]
+    };
+
+    const summaries = extractFlightsFromOrders(mockOrders as any);
+    expect(summaries[0]).toMatchObject({
+      checkinStatus: "nocheckin",
+      checkInOpenUTC: "2026-05-01T10:00:00Z",
+      checkInCloseUTC: "2026-06-01T08:00:00Z"
+    });
+  });
 });

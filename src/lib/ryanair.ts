@@ -7,6 +7,8 @@ export interface FlightSummary {
   flightNumber: string;
   checkinStatus: string; // "nocheckin", "checkedin", etc.
   isReady: boolean;
+  checkInOpenUTC?: string;
+  checkInCloseUTC?: string;
 }
 
 export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[] {
@@ -28,7 +30,9 @@ export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[]
         date: flight.times?.departUTC || "",
         flightNumber: flight.flightNumber,
         checkinStatus: checkin?.status || "unknown",
-        isReady: checkin?.status !== "nocheckin"
+        isReady: checkin?.status !== "nocheckin",
+        checkInOpenUTC: flight.checkInOpenUTC,
+        checkInCloseUTC: flight.checkInCloseUTC
       };
     });
   });
@@ -78,6 +82,8 @@ export interface OrderItem {
       destination: string;
       flightNumber: string;
       times?: { departUTC: string };
+      checkInOpenUTC?: string;
+      checkInCloseUTC?: string;
     }>;
     checkins?: Array<{ status: string; journeyNum: number }>;
   };

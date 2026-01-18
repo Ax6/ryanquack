@@ -415,7 +415,20 @@ function renderFlights(flights) {
     const meta = document.createElement("div");
     meta.className = "pass-meta";
     meta.style.marginTop = "2px";
-    meta.textContent = flight.checkinStatus === "nocheckin" ? "Check-in not open" : flight.checkinStatus;
+    
+    if (flight.checkinStatus === "nocheckin") {
+      const now = new Date();
+      const open = flight.checkInOpenUTC ? new Date(flight.checkInOpenUTC) : null;
+      const close = flight.checkInCloseUTC ? new Date(flight.checkInCloseUTC) : null;
+
+      if (open && now >= open && (!close || now <= close)) {
+        meta.textContent = "Check-in open";
+      } else {
+        meta.textContent = "Check-in not open";
+      }
+    } else {
+      meta.textContent = flight.checkinStatus;
+    }
     
     const details = document.createElement("div");
     details.style.fontSize = "11px";

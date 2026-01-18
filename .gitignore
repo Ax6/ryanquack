@@ -2,11 +2,13 @@
 .DS_Store
 .idea/
 .vscode/
+.gemini
 
 # Build and packages
 node_modules/
 dist/
 tmp/
+safari/
 
 # Data & Secrets
 raw-data/
