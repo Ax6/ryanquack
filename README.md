@@ -28,7 +28,7 @@ It's lightweight, privacy-focused (your data stays local), and works offline onc
 
 ## 🚀 Installation
 
-- [Chrome extension](https://chromewebstore.google.com/detail/ryanquack/ngbbihpkolpkbgnboinpcjinjihanjch?authuser=0&hl=en)
+- [Chrome Extension](https://chromewebstore.google.com/detail/ryanquack/ngbbihpkolpkbgnboinpcjinjihanjch?authuser=0&hl=en)
 - [Firefox Add-On](https://addons.mozilla.org/en-GB/firefox/addon/ryanquack/)
 
 ### From Source (Developer Mode)
