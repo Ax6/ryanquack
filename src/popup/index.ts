@@ -525,37 +525,43 @@ function renderFlights(flights) {
 async function fetchPasses() {
   setStatus("Paddling to Ryanair...");
 
-  // 1. Try Cache First (Offline Mode)
+  // 1. Read cache up front (used for optimistic pre-load AND as offline fallback)
+  let cachedData: { passes: any[]; downloadPayloads: any[]; flights: any[]; cachedAt?: number } | null = null;
   try {
     const cache = await browser.storage.local.get("cachedPasses");
     if (cache && cache.cachedPasses) {
-      const { passes, downloadPayloads, flights } = cache.cachedPasses;
-      
-      // Clear before rendering cache
-      passesEl.innerHTML = "";
-      bulkActionsEl.innerHTML = "";
-
-      if (passes.length > 0) {
-        renderPasses(passes, downloadPayloads);
-        renderBulkActions(passes, downloadPayloads);
-      }
-      const upcoming = flights.filter(f => !f.isReady);
-      if (upcoming.length > 0) {
-        renderFlights(upcoming);
-      }
-      
-      setStatus("Offline Mode ☁️");
+      cachedData = cache.cachedPasses;
     }
   } catch (e) {
     console.error("Cache read error", e);
   }
 
-  // 2. Network Fetch
+  // 2. Optimistic pre-load: only show cache if within TTL
+  if (cachedData) {
+    const isFresh = cachedData.cachedAt && (Date.now() - cachedData.cachedAt) < CACHE_TTL_MS;
+    if (isFresh) {
+      passesEl.innerHTML = "";
+      bulkActionsEl.innerHTML = "";
+
+      if (cachedData.passes.length > 0) {
+        renderPasses(cachedData.passes, cachedData.downloadPayloads);
+        renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
+      }
+      const upcoming = cachedData.flights.filter(f => !f.isReady);
+      if (upcoming.length > 0) {
+        renderFlights(upcoming);
+      }
+
+      setStatus("Offline Mode ☁️");
+    }
+  }
+
+  // 3. Network Fetch (always)
   try {
     const res = (await browser.runtime.sendMessage({
       type: "RYQ_FETCH_BOARDING_PASSES",
     })) as any;
-    
+
     const passes = res && res.passes ? res.passes : [];
     const payloads = res && res.downloadPayloads ? res.downloadPayloads : [];
     const flights = res && res.flights ? res.flights : [];
@@ -586,15 +592,25 @@ async function fetchPasses() {
     if (msg.includes("LOGIN_REQUIRED")) {
       setStatus("Please log in to Ryanair.com 🔒");
     } else if (msg.includes("NO_PASSES")) {
-      // This case is largely handled by the flight check above, but as a fallback:
       setStatus("Nothing to quack.");
-    } else {
-      // If we have content (cached), show a friendly offline message instead of the error
-      if (passesEl.innerHTML !== "") {
-        setStatus("Offline (Cached) ☁️");
-      } else {
-        setStatus(`Error: ${msg}`);
+    } else if (cachedData) {
+      // Network failed but we have a cache — render it regardless of TTL
+      if (passesEl.innerHTML === "") {
+        passesEl.innerHTML = "";
+        bulkActionsEl.innerHTML = "";
+
+        if (cachedData.passes.length > 0) {
+          renderPasses(cachedData.passes, cachedData.downloadPayloads);
+          renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
+        }
+        const upcoming = cachedData.flights.filter(f => !f.isReady);
+        if (upcoming.length > 0) {
+          renderFlights(upcoming);
+        }
       }
+      setStatus("Offline (Cached) ☁️");
+    } else {
+      setStatus(`Error: ${msg}`);
     }
   }
 }

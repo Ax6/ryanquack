@@ -15,7 +15,7 @@
 
 Ryanair has decided that you can download boarding passes only from their mobile app, this way they can hug you with marketing and squeeze all that sweet tracking data from you. I don't need the app. So **RyanQuack** paddles upstream by fetching your booking details directly from their website and rendering flight tickets right in your browser.
 
-It's lightweight, privacy-focused (your data stays local), and works offline once fetched.
+It's lightweight and privacy-focused — your data stays local, never leaving your browser.
 
 ## ✨ Features
 
