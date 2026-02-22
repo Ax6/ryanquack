@@ -9,10 +9,13 @@
  */
 import bwipjs from "bwip-js";
 import browser from "webextension-polyfill";
+import { downloadPass } from "../lib/api";
+import { buildZip } from "../lib/zip";
 import "./popup.css";
 
 const statusEl = document.getElementById("status") as HTMLElement;
 const passesEl = document.getElementById("passes") as HTMLElement;
+const bulkActionsEl = document.getElementById("bulk-actions") as HTMLElement;
 
 function ensureBcMath() {
   if (typeof window.bcadd === "function") {
@@ -242,7 +245,7 @@ function renderTicketDetails(container, pass) {
             const url = URL.createObjectURL(blob);
             await browser.downloads.download({
               url,
-              filename: `ryanair-pass-${pass.pnr}.png`,
+              filename: buildPassFilename(pass, "png"),
               saveAs: false
             });
             // Give some time for the download to start before revoking
@@ -300,15 +303,37 @@ function renderAztec(container, text) {
   container.appendChild(canvas);
 }
 
+function buildPassBaseName(pass): string {
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+  const first = normalize(pass.name.first);
+  const last = normalize(pass.name.last);
+  const seat = pass.seat.designator.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return `${first}_${last}_${seat}`;
+}
+
+function buildPassFilename(pass, ext: string): string {
+  return `${buildPassBaseName(pass)}.${ext}`;
+}
+
+
+async function downloadWalletPass(payload, pass) {
+  const blob = await downloadPass(payload, API_DOWNLOAD_PASS_URL);
+  const url = URL.createObjectURL(blob);
+  await browser.downloads.download({
+    url,
+    filename: buildPassFilename(pass, "pkpass"),
+    saveAs: false,
+  });
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 const passActions = [
   {
     id: "apple",
     label: "Download Apple Wallet Pass",
-    handler: async (payload) => {
-      await browser.runtime.sendMessage({
-        type: "RYQ_DOWNLOAD_PASS",
-        payload
-      });
+    handler: async (payload, pass) => {
+      await downloadWalletPass(payload, pass);
     }
   },
   {
@@ -320,6 +345,58 @@ const passActions = [
     }
   }
 ];
+
+async function downloadAllPasses(passes, payloads) {
+  const btn = document.getElementById("btn-download-all") as HTMLButtonElement;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Downloading...";
+  }
+  setStatus("Preparing passes...");
+  try {
+    const fileEntries = await Promise.all(
+      passes.map(async (pass, i) => {
+        const base = buildPassBaseName(pass);
+        const [pkpassBlob, canvas] = await Promise.all([
+          downloadPass(payloads[i], API_DOWNLOAD_PASS_URL),
+          drawTicketToCanvas(pass),
+        ]);
+        const pngBlob = await new Promise<Blob>((resolve, reject) =>
+          canvas.toBlob(b => b ? resolve(b) : reject(new Error("Canvas export failed")), "image/png")
+        );
+        return [
+          { name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) },
+          { name: `${base}.png`,    data: new Uint8Array(await pngBlob.arrayBuffer()) },
+        ];
+      })
+    );
+
+    const zip = buildZip(fileEntries.flat());
+    const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+    await browser.downloads.download({ url, filename: "passes.zip", saveAs: false });
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus(`Downloaded ${passes.length} passes! ✅`);
+  } catch (error) {
+    setStatus(`Download failed: ${error.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Download All Passes";
+    }
+  }
+}
+
+function renderBulkActions(passes, payloads) {
+  bulkActionsEl.innerHTML = "";
+  if (passes.length <= 1) return;
+
+  const btn = document.createElement("button");
+  btn.id = "btn-download-all";
+  btn.className = "btn-download-all";
+  btn.textContent = "Download All Passes";
+  btn.addEventListener("click", () => downloadAllPasses(passes, payloads));
+  bulkActionsEl.appendChild(btn);
+}
 
 function buildPassTitle(pass) {
   return `${pass.pnr} · ${pass.departure.code} → ${pass.arrival.code} · ${pass.name.first} ${pass.name.last}`;
@@ -456,9 +533,11 @@ async function fetchPasses() {
       
       // Clear before rendering cache
       passesEl.innerHTML = "";
-      
+      bulkActionsEl.innerHTML = "";
+
       if (passes.length > 0) {
         renderPasses(passes, downloadPayloads);
+        renderBulkActions(passes, downloadPayloads);
       }
       const upcoming = flights.filter(f => !f.isReady);
       if (upcoming.length > 0) {
@@ -482,9 +561,11 @@ async function fetchPasses() {
     const flights = res && res.flights ? res.flights : [];
 
     passesEl.innerHTML = "";
+    bulkActionsEl.innerHTML = "";
 
     if (passes.length > 0) {
       renderPasses(passes, payloads);
+      renderBulkActions(passes, payloads);
     }
 
     const upcoming = flights.filter(f => !f.isReady);
