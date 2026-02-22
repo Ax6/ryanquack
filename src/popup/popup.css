@@ -62,6 +62,16 @@ button:disabled {
   line-height: 1.4;
 }
 
+#bulk-actions {
+  margin-top: 12px;
+}
+
+.btn-download-all {
+  background: #073590;
+  color: #f6c453;
+  border-color: #073590;
+}
+
 #passes {
   display: grid;
   gap: 16px; /* Increased gap */

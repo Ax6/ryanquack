@@ -166,20 +166,31 @@ const server = createServer(async (req, res) => {
          const body = JSON.parse(requestBody);
          const requestedIds = body.bookingIds || [];
          
+         const MOCK_PASSENGERS = [
+           { first: "Ryan",  last: "Quack",   seat: "1A",  sequence: 1,  priority: true  },
+           { first: "John",  last: "Smith",   seat: "14C", sequence: 42, priority: false },
+           { first: "Maria", last: "Garcia",  seat: "7B",  sequence: 18, priority: true  },
+           { first: "Liam",  last: "Murphy",  seat: "22F", sequence: 67, priority: false },
+         ];
+
          // Generate passes for requested IDs
-         const passes = requestedIds.map(id => ({
-            passId: `PASS_${id}`,
-            pnr: `PASS${id-1000+1}`, // Reverse engineer the PNR logic from generateOrders
-            name: { first: "Ryan", last: "Quack" },
-            barcode: "M1QUACK/RYAN...",
-            departure: { code: "STN", name: "London", date: "2026-01-15T10:00:00" },
-            arrival: { code: "DUB", name: "Dublin", date: "2026-01-15T11:15:00" },
-            flight: { carrierCode: "FR", number: `123${id}` },
-            seat: { designator: "1A" },
-            sequence: 1,
-            boardingTime: "2026-01-15T09:00:00",
-            priority: true
-         }));
+         const passes = requestedIds.map((id, i) => {
+            const p = MOCK_PASSENGERS[i % MOCK_PASSENGERS.length];
+            return {
+              passId: `PASS_${id}`,
+              pnr: `PASS${id-1000+1}`,
+              name: { first: p.first, last: p.last },
+              barcode: `M1${p.last.toUpperCase()}/${p.first.toUpperCase()} EABCDEF STUBDUB FR ${String(id).padStart(4,'0')} 0151A${p.seat.padStart(4,' ')}100`,
+              departure: { code: "STN", name: "London Stansted", date: "2026-01-15T10:00:00" },
+              arrival: { code: "DUB", name: "Dublin", date: "2026-01-15T11:15:00" },
+              flight: { carrierCode: "FR", number: `${id}` },
+              seat: { designator: p.seat },
+              sequence: p.sequence,
+              boardingTime: "2026-01-15T09:30:00",
+              priority: p.priority,
+              paxType: "ADT",
+            };
+         });
 
          res.setHeader("Content-Type", "application/json");
          res.writeHead(200);
