@@ -70,7 +70,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       };
 
       // Cache for offline support
-      browser.storage.local.set({ cachedPasses: result });
+      browser.storage.local.set({ cachedPasses: { ...result, cachedAt: Date.now() } });
 
       return result;
     });

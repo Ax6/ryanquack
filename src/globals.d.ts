@@ -14,4 +14,5 @@ declare global {
   const API_BOARDING_PASS_URL: string;
   const API_DOWNLOAD_PASS_URL: string;
   const API_ORDERS_URL: string;
+  const CACHE_TTL_MS: number;
 }
