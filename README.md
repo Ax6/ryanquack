@@ -21,6 +21,7 @@ It's lightweight, privacy-focused (your data stays local), and works offline onc
 
 - **🎟️ Instant Boarding Passes:** Renders a scannable QR code usable at the gate (tested personally).
 - **🍏 Apple Wallet Export:** Downloads `.pkpass` files for your iPhone wallet.
+- **📦 Bulk Download:** Downloads all boarding passes at once — Apple Wallet `.pkpass` + ticket image `.png` for every passenger, bundled into a single `passes.zip`.
 - **🖼️ Image Export:** Generates a high-res PNG of your ticket for sharing or printing.
 - **📋 Clipboard Support:** Copy the ticket image directly to your clipboard.
 - **✈️ Flight Summaries:** View upcoming flights even before check-in opens.
