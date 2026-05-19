@@ -16,6 +16,9 @@ import "./popup.css";
 const statusEl = document.getElementById("status") as HTMLElement;
 const passesEl = document.getElementById("passes") as HTMLElement;
 const bulkActionsEl = document.getElementById("bulk-actions") as HTMLElement;
+const searchBarEl = document.getElementById("search-bar") as HTMLElement;
+
+const SEARCH_MIN_PASSES = 4;
 
 function ensureBcMath() {
   if (typeof window.bcadd === "function") {
@@ -36,11 +39,12 @@ function setStatus(text) {
 }
 
 const QUACKS = [
-  "Quack!", 
-  "Quack quack! 🦆", 
-  "Honk!", 
-  "Waddle waddle...",
-  "Quacking..."
+  "Quack!",
+  "Quack quack! 🦆",
+  "Top quack! 🦆",
+  "Mighty quack!",
+  "Quackity quack!",
+  "Splash! 🦆",
 ];
 
 const READY_QUACK = "Ready to quack...";
@@ -233,9 +237,9 @@ function renderTicketDetails(container, pass) {
           try {
             await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
             const original = btnCopy.textContent;
-            btnCopy.textContent = "Copied! ✅";
-            setTimeout(() => { btnCopy.textContent = original; }, 2000);
+            btnCopy.textContent = getRandomQuack();
             setStatus("Copied to clipboard! 📋");
+            setTimeout(() => { btnCopy.textContent = original; }, 2000);
           } catch (err) {
             console.error("Clipboard write failed", err);
             setStatus("Copy failed 🦆");
@@ -250,11 +254,11 @@ function renderTicketDetails(container, pass) {
             });
             // Give some time for the download to start before revoking
             setTimeout(() => URL.revokeObjectURL(url), 1000);
-            
+
             const original = btnSave.textContent;
-            btnSave.textContent = "Saved! ✅";
-            setTimeout(() => { btnSave.textContent = original; }, 2000);
+            btnSave.textContent = getRandomQuack();
             setStatus("Image saved! 🖼️");
+            setTimeout(() => { btnSave.textContent = original; }, 2000);
           } catch (err) {
             console.error("Download failed", err);
             setStatus("Save failed 🦆");
@@ -348,6 +352,7 @@ const passActions = [
 
 async function downloadAllPasses(passes, payloads) {
   const btn = document.getElementById("btn-download-all") as HTMLButtonElement;
+  const originalLabel = btn?.textContent ?? "Download All Passes";
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Downloading...";
@@ -381,9 +386,74 @@ async function downloadAllPasses(passes, payloads) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "Download All Passes";
+      btn.textContent = originalLabel;
     }
   }
+}
+
+function renderSearchBar(passes) {
+  searchBarEl.innerHTML = "";
+  if (passes.length < SEARCH_MIN_PASSES) return;
+
+  const input = document.createElement("input");
+  input.type = "search";
+  input.className = "search-input";
+  input.placeholder = "Search by name or reference...";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+
+  const emptyHint = document.createElement("div");
+  emptyHint.className = "search-empty";
+  emptyHint.textContent = "No passes match your search 🦆";
+  emptyHint.style.display = "none";
+
+  const autoOpened = new Set<HTMLButtonElement>();
+
+  input.addEventListener("input", () => {
+    const query = input.value.trim().toLowerCase();
+    const tokens = query.split(/\s+/).filter(Boolean);
+    const rows = passesEl.querySelectorAll<HTMLElement>(".pass");
+    const visible: HTMLElement[] = [];
+
+    rows.forEach((row) => {
+      const haystack = row.dataset.search || "";
+      const match = tokens.length === 0 || tokens.every((t) => haystack.includes(t));
+      row.style.display = match ? "" : "none";
+      if (match) visible.push(row);
+    });
+
+    emptyHint.style.display = query !== "" && visible.length === 0 ? "" : "none";
+
+    const bulkBtn = document.getElementById("btn-download-all");
+    if (bulkBtn) {
+      bulkBtn.textContent = query === ""
+        ? "Download All Passes"
+        : `Download Results (${visible.length})`;
+      (bulkBtn as HTMLButtonElement).disabled = visible.length === 0;
+    }
+
+    const isSingleMatch = query !== "" && visible.length === 1;
+
+    if (isSingleMatch) {
+      const showBtn = visible[0].querySelector<HTMLButtonElement>(
+        'button[data-action="qr"]'
+      );
+      if (showBtn && showBtn.textContent === "Show Ticket") {
+        autoOpened.add(showBtn);
+        showBtn.click();
+      }
+    } else {
+      autoOpened.forEach((btn) => {
+        if (btn.textContent === "Hide Ticket") {
+          btn.click();
+        }
+      });
+      autoOpened.clear();
+    }
+  });
+
+  searchBarEl.appendChild(input);
+  searchBarEl.appendChild(emptyHint);
 }
 
 function renderBulkActions(passes, payloads) {
@@ -394,7 +464,15 @@ function renderBulkActions(passes, payloads) {
   btn.id = "btn-download-all";
   btn.className = "btn-download-all";
   btn.textContent = "Download All Passes";
-  btn.addEventListener("click", () => downloadAllPasses(passes, payloads));
+  btn.addEventListener("click", () => {
+    const indices = Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
+      .filter((row) => row.style.display !== "none")
+      .map((row) => Number(row.dataset.index))
+      .filter((i) => !Number.isNaN(i));
+    const selectedPasses = indices.map((i) => passes[i]);
+    const selectedPayloads = indices.map((i) => payloads[i]);
+    downloadAllPasses(selectedPasses, selectedPayloads);
+  });
   bulkActionsEl.appendChild(btn);
 }
 
@@ -402,11 +480,25 @@ function buildPassTitle(pass) {
   return `${pass.pnr} · ${pass.departure.code} → ${pass.arrival.code} · ${pass.name.first} ${pass.name.last}`;
 }
 
+function buildPassSearchHaystack(pass): string {
+  return [
+    pass.pnr,
+    pass.name.first,
+    pass.name.last,
+    pass.departure.code,
+    pass.arrival.code,
+    pass.flight.carrierCode,
+    pass.flight.number,
+  ].join(" ").toLowerCase();
+}
+
 function renderPasses(passes, payloads) {
   passes.forEach((pass, index) => {
     const payload = payloads[index];
     const row = document.createElement("div");
     row.className = "pass";
+    row.dataset.search = buildPassSearchHaystack(pass);
+    row.dataset.index = String(index);
 
     const header = document.createElement("div");
     header.className = "pass-header";
@@ -426,6 +518,7 @@ function renderPasses(passes, payloads) {
     passActions.forEach((action) => {
       const button = document.createElement("button");
       button.textContent = action.label;
+      button.dataset.action = action.id;
       button.addEventListener("click", async () => {
         // Toggle logic for "Show Ticket"
         if (action.id === "qr") {
@@ -435,17 +528,10 @@ function renderPasses(passes, payloads) {
             button.textContent = action.label;
             return;
           }
-          
-          button.textContent = "Quack! 🦆";
-          // Render immediately
+
           try {
             renderTicketDetails(outputBox, pass);
-            setStatus(getRandomQuack());
-            
-            // Wait 1s while showing "Quack!" label
-            await new Promise(resolve => setTimeout(resolve, 1000));
             button.textContent = "Hide Ticket";
-            setStatus(READY_QUACK);
           } catch (error) {
             setStatus(`Error: ${error.message}`);
             button.textContent = action.label;
@@ -542,10 +628,12 @@ async function fetchPasses() {
     if (isFresh) {
       passesEl.innerHTML = "";
       bulkActionsEl.innerHTML = "";
+      searchBarEl.innerHTML = "";
 
       if (cachedData.passes.length > 0) {
         renderPasses(cachedData.passes, cachedData.downloadPayloads);
         renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
+        renderSearchBar(cachedData.passes);
       }
       const upcoming = cachedData.flights.filter(f => !f.isReady);
       if (upcoming.length > 0) {
@@ -568,10 +656,12 @@ async function fetchPasses() {
 
     passesEl.innerHTML = "";
     bulkActionsEl.innerHTML = "";
+    searchBarEl.innerHTML = "";
 
     if (passes.length > 0) {
       renderPasses(passes, payloads);
       renderBulkActions(passes, payloads);
+      renderSearchBar(passes);
     }
 
     const upcoming = flights.filter(f => !f.isReady);
@@ -598,10 +688,12 @@ async function fetchPasses() {
       if (passesEl.innerHTML === "") {
         passesEl.innerHTML = "";
         bulkActionsEl.innerHTML = "";
+        searchBarEl.innerHTML = "";
 
         if (cachedData.passes.length > 0) {
           renderPasses(cachedData.passes, cachedData.downloadPayloads);
           renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
+          renderSearchBar(cachedData.passes);
         }
         const upcoming = cachedData.flights.filter(f => !f.isReady);
         if (upcoming.length > 0) {

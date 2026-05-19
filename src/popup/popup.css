@@ -66,6 +66,32 @@ button:disabled {
   margin-top: 12px;
 }
 
+.search-input {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid #2b2b2b;
+  background: #ffffff;
+  color: #2b2b2b;
+  font-size: 13px;
+  border-radius: 4px;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.search-input:focus {
+  outline: 2px solid #073590;
+  outline-offset: -1px;
+}
+
+.search-empty {
+  text-align: center;
+  font-size: 11px;
+  color: #666;
+  padding: 12px 0;
+  font-style: italic;
+}
+
 .btn-download-all {
   background: #073590;
   color: #f6c453;

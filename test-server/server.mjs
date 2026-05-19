@@ -167,10 +167,11 @@ const server = createServer(async (req, res) => {
          const requestedIds = body.bookingIds || [];
          
          const MOCK_PASSENGERS = [
-           { first: "Ryan",  last: "Quack",   seat: "1A",  sequence: 1,  priority: true  },
-           { first: "John",  last: "Smith",   seat: "14C", sequence: 42, priority: false },
-           { first: "Maria", last: "Garcia",  seat: "7B",  sequence: 18, priority: true  },
-           { first: "Liam",  last: "Murphy",  seat: "22F", sequence: 67, priority: false },
+           { first: "Ryan",  last: "Quack",    seat: "1A",  sequence: 1,  priority: true  },
+           { first: "John",  last: "Smith",    seat: "14C", sequence: 42, priority: false },
+           { first: "Maria", last: "Garcia",   seat: "7B",  sequence: 18, priority: true  },
+           { first: "Ryan",  last: "O'Brien",  seat: "9D",  sequence: 27, priority: false },
+           { first: "Liam",  last: "Murphy",   seat: "22F", sequence: 67, priority: false },
          ];
 
          // Generate passes for requested IDs
