@@ -1,18 +1,16 @@
-Ryanair says I need the app. Well, quack that. I'll get the ticket my way.
+Ryanair says I need the app. Well, quack that — I'll get the ticket my way. 🦆
 
-RyanQuack is an open-source browser extension that fetches, displays, and downloads your Ryanair boarding passes directly in your browser. No mobile app required.
+A free, open-source browser extension that fetches, displays, and downloads your Ryanair boarding passes directly in your browser. No app needed.
 
-Ryanair has restricted electronic boarding passes to their mobile app, so they can push ads and tracking. RyanQuack works with your existing Ryanair login to retrieve your boarding passes and display them right in your browser.
+Ryanair moved boarding passes into its app. RyanQuack paddles upstream — connecting to your own booking to render your pass right in your browser.
 
 Features:
-* 🎟️ Instant Boarding Passes: Renders the QR code, scan-ready for the gate.
-* 🍏 Apple Wallet Export: Download the pass to use on your iPhone.
-* 🖼️ Image Export: Save a high-res PNG of your ticket to print or share.
-* 📦 Bulk Download: Travelling with others? Download all passes at once.
-* ✈️ Upcoming Flights: View your future trips in a clean list before check-in opens.
+🎟️ Instant boarding pass — QR code rendered, scan-ready for the gate
+🍏 Apple Wallet export — download your pass for your iPhone
+🖼️ Image export — save a high-res PNG to print or share
+📦 Bulk download — all passengers' passes at once, bundled in a zip
+✈️ Upcoming flights — see your trips before check-in opens
+🔒 Privacy-focused — runs locally; nothing is sent to any third-party server
+📖 Open source — fully auditable, no hidden tricks
 
-Your data never leaves your browser. RyanQuack only reads what you've already loaded on the Ryanair website. Nothing is sent to any third-party server.
-
-Open Source: RyanQuack is a free, open-source project. The code is available on GitHub for anyone.
-
-Disclaimer: This extension is a third-party tool and is not affiliated with, endorsed by, or connected to Ryanair.
+Not affiliated with, endorsed by, or connected to Ryanair. For personal, non-commercial use only. Use at your own risk.

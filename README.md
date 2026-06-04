@@ -13,7 +13,7 @@
 
 ## 🧐 Why?
 
-Ryanair has decided that you can download boarding passes only from their mobile app, this way they can hug you with marketing and squeeze all that sweet tracking data from you. I don't need the app. So **RyanQuack** paddles upstream by fetching your booking details directly from their website and rendering flight tickets right in your browser.
+Ryanair has decided that you can download boarding passes only from their mobile app, probably so they can hug you with marketing and squeeze all that sweet tracking data from you. I don't need the app. So **RyanQuack** paddles upstream by fetching your booking details directly from their website and rendering flight tickets right in your browser.
 
 It's lightweight and privacy-focused — your data stays local, never leaving your browser.
 
@@ -36,7 +36,7 @@ It's lightweight and privacy-focused — your data stays local, never leaving yo
 
 1.  **Clone the nest:**
     ```bash
-    git clone https://github.com/yourusername/ryanquack.git
+    git clone https://github.com/Ax6/ryanquack.git
     cd ryanquack
     ```
 2.  **Install dependencies:**
