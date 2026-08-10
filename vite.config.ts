@@ -13,6 +13,7 @@ export default defineConfig({
   define: {
     API_BOARDING_PASS_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://mntappbp.ryanair.com"),
     API_DOWNLOAD_PASS_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://mawbp.ryanair.com"),
+    API_GOOGLE_WALLET_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://mgpbp.ryanair.com"),
     API_ORDERS_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://services-api.ryanair.com"),
     CACHE_TTL_MS: isMock ? 60_000 : 60 * 60 * 1000,
   },

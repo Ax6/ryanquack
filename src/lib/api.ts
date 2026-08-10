@@ -90,3 +90,26 @@ export async function downloadPass(
 
   return response.blob();
 }
+
+
+export async function fetchGoogleWalletToken(
+  payload: any,
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch
+) {
+  const response = await fetchImpl(`${baseUrl}/v1/boardingpass`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      "client": "android",
+    },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`google wallet boardingpass failed: ${response.status}`);
+  }
+
+  return response.json();
+}

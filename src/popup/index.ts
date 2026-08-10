@@ -9,7 +9,7 @@
  */
 import bwipjs from "bwip-js";
 import browser from "webextension-polyfill";
-import { downloadPass } from "../lib/api";
+import { downloadPass, fetchGoogleWalletToken } from "../lib/api";
 import { buildZip } from "../lib/zip";
 import "./popup.css";
 
@@ -61,12 +61,12 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
   // Logical dimensions
   const width = 500;
   const height = 740;
-  
+
   // High-resolution scaling (3x)
   const resScale = 3;
   canvas.width = width * resScale;
   canvas.height = height * resScale;
-  
+
   // Ensure all subsequent drawing is scaled up
   ctx.scale(resScale, resScale);
 
@@ -93,7 +93,7 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
   // Helper to draw label/value pairs
   const drawField = (label, value, x, y, align = "left") => {
     ctx.textAlign = align;
-    
+
     ctx.font = "normal 14px sans-serif";
     ctx.fillStyle = "#666666";
     ctx.fillText(label.toUpperCase(), x, y);
@@ -105,7 +105,7 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
 
   // Row 1: Passenger
   drawField("Passenger", `${pass.name.first} ${pass.name.last}`, 40, 110, "left");
-  
+
   // Row 2: Flight / Date
   drawField("Flight", `${pass.flight.carrierCode} ${pass.flight.number}`, 40, 180, "left");
   const flightDate = new Date(pass.departure.date);
@@ -138,7 +138,7 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
       backgroundcolor: "ffffff",
       includetext: false
     });
-    
+
     // Center the Aztec code
     const aztecSize = 300;
     const x = (width - aztecSize) / 2;
@@ -159,7 +159,7 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
 
 function renderTicketDetails(container, pass) {
   container.innerHTML = "";
-  
+
   const flightDate = new Date(pass.departure.date);
   const dateStr = flightDate.toLocaleDateString("en-GB", { day: '2-digit', month: 'short' });
   const timeStr = new Date(pass.boardingTime).toLocaleTimeString("en-GB", { hour: '2-digit', minute: '2-digit' });
@@ -174,7 +174,7 @@ function renderTicketDetails(container, pass) {
       <div class="ticket-route">
         ${pass.departure.code} <span style="color:#666">✈</span> ${pass.arrival.code}
       </div>
-      
+
       <div class="ticket-section">
         <div>
           <div class="ticket-label">Passenger</div>
@@ -207,7 +207,7 @@ function renderTicketDetails(container, pass) {
           <div class="ticket-value">${pass.sequence}</div>
         </div>
       </div>
-      
+
       <div style="text-align: center; margin-top: 8px;">
         <span class="ticket-label">Priority: </span>
         <span class="ticket-value">${pass.priority ? "YES ⚡" : "No"}</span>
@@ -218,7 +218,7 @@ function renderTicketDetails(container, pass) {
   `;
 
   container.innerHTML = html;
-  
+
   // Handlers for the new buttons
   const btnCopy = container.querySelector("#btn-copy");
   const btnSave = container.querySelector("#btn-save");
@@ -226,7 +226,7 @@ function renderTicketDetails(container, pass) {
   const handleExport = async (action) => {
     try {
       const canvas = await drawTicketToCanvas(pass);
-      
+
       canvas.toBlob(async (blob) => {
         if (!blob) {
           setStatus("Export failed 🦆");
@@ -276,7 +276,7 @@ function renderTicketDetails(container, pass) {
 
   const canvasContainer = container.querySelector(".aztec-canvas");
   const canvas = document.createElement("canvas");
-  
+
   bwipjs.toCanvas(canvas, {
     bcid: "azteccode",
     text: pass.barcode,
@@ -332,6 +332,12 @@ async function downloadWalletPass(payload, pass) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+async function addToGoogleWallet(payload) {
+  const response = await fetchGoogleWalletToken(payload, API_GOOGLE_WALLET_URL);
+  const url = `https://pay.google.com/gp/v/save/${response.Token}`
+  window.open(url, '_blank');
+}
+
 const passActions = [
   {
     id: "apple",
@@ -346,6 +352,13 @@ const passActions = [
     handler: async (_payload, pass, elements) => {
       renderAztec(elements.outputBox, pass.barcode);
       elements.outputBox.classList.remove("pass-barcode");
+    }
+  },
+  {
+    id: "google",
+    label: "Add to Google Wallet",
+    handler: async (payload) => {
+      await addToGoogleWallet(payload);
     }
   }
 ];
@@ -564,7 +577,7 @@ function renderPasses(passes, payloads) {
 function renderFlights(flights) {
   flights.forEach((flight) => {
     const row = document.createElement("div");
-    row.className = "flight-summary"; 
+    row.className = "flight-summary";
 
     const header = document.createElement("div");
     header.className = "pass-header";
@@ -578,7 +591,7 @@ function renderFlights(flights) {
     const meta = document.createElement("div");
     meta.className = "pass-meta";
     meta.style.marginTop = "2px";
-    
+
     if (flight.checkinStatus === "nocheckin") {
       const now = new Date();
       const open = flight.checkInOpenUTC ? new Date(flight.checkInOpenUTC) : null;
@@ -592,7 +605,7 @@ function renderFlights(flights) {
     } else {
       meta.textContent = flight.checkinStatus;
     }
-    
+
     const details = document.createElement("div");
     details.style.fontSize = "11px";
     details.style.marginTop = "4px";

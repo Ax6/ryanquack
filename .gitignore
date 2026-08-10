@@ -15,3 +15,7 @@ raw-data/
 recordings/
 *.mitm
 *.ryanair.com/
+
+# pnpm
+pnpm-lock.yaml
+pnpm-workspace.yaml

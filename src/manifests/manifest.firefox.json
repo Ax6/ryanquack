@@ -18,7 +18,8 @@
   "host_permissions": [
     "https://*.ryanair.com/*",
     "https://mntappbp.ryanair.com/*",
-    "https://mawbp.ryanair.com/*"
+    "https://mawbp.ryanair.com/*",
+    "https://mgpbp.ryanair.com/*"
   ],
   "background": {
     "scripts": [
