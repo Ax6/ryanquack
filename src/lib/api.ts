@@ -96,7 +96,7 @@ export async function fetchGoogleWalletToken(
   payload: any,
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
-) {
+): Promise<string> {
   const response = await fetchImpl(`${baseUrl}/v1/boardingpass`, {
     method: "PUT",
     headers: {
@@ -111,5 +111,16 @@ export async function fetchGoogleWalletToken(
     throw new Error(`google wallet boardingpass failed: ${response.status}`);
   }
 
-  return response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error("google wallet boardingpass returned invalid JSON");
+  }
+
+  if (!data || typeof data.Token !== "string" || !data.Token.trim()) {
+    throw new Error("google wallet boardingpass returned no token");
+  }
+
+  return data.Token;
 }

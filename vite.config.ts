@@ -16,6 +16,7 @@ export default defineConfig({
     API_GOOGLE_WALLET_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://mgpbp.ryanair.com"),
     API_ORDERS_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://services-api.ryanair.com"),
     CACHE_TTL_MS: isMock ? 60_000 : 60 * 60 * 1000,
+    GOOGLE_WALLET_SAVE_URL: JSON.stringify(isMock ? "http://localhost:3000/google-wallet/save" : "https://pay.google.com/gp/v/save"),
   },
   build: {
     outDir,

@@ -55,7 +55,7 @@ const server = createServer(async (req, res) => {
   const origin = req.headers.origin;
   const requestHeaders = req.headers["access-control-request-headers"];
   res.setHeader("Access-Control-Allow-Origin", origin || "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", requestHeaders || "*");
   res.setHeader("Access-Control-Allow-Credentials", "true");
 
@@ -86,6 +86,9 @@ const server = createServer(async (req, res) => {
             <button onclick="set('LOGGED_OUT')">Logged Out (403)</button>
             <button onclick="set('NO_FLIGHTS')">No Flights (Empty)</button>
             <button onclick="set('MIXED')">Active (Uses Counts)</button>
+            <button onclick="set('WALLET_ERROR')">Google Wallet Error (500)</button>
+            <button onclick="set('WALLET_NO_TOKEN')">Google Wallet Missing Token</button>
+            <button onclick="set('WALLET_DELAY')">Google Wallet Delayed (6 seconds)</button>
           </div>
           <script>
             function set(s) {
@@ -134,6 +137,66 @@ const server = createServer(async (req, res) => {
   if (currentScenario === "LOGGED_OUT") {
     res.writeHead(403);
     res.end();
+    return;
+  }
+
+  if (req.url === "/v1/boardingpass" && req.method === "PUT") {
+    if (req.headers["client"] !== "android") {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+
+    let requestBody = "";
+    for await (const chunk of req) {
+      requestBody += chunk;
+    }
+
+    try {
+      const payload = JSON.parse(requestBody);
+      const requiredFields = [
+        "sequenceNumber",
+        "lang",
+        "arrivalStation",
+        "departureStation",
+        "recordLocator",
+        "isInfant",
+      ];
+      if (requiredFields.some((field) => !(field in payload))) {
+        res.writeHead(400);
+        res.end("Invalid Google Wallet payload");
+        return;
+      }
+    } catch {
+      res.writeHead(400);
+      res.end("Invalid JSON");
+      return;
+    }
+
+    if (currentScenario === "WALLET_ERROR") {
+      res.writeHead(500);
+      res.end("Google Wallet failed");
+      return;
+    }
+
+    if (currentScenario === "WALLET_DELAY") {
+      await new Promise((resolve) => setTimeout(resolve, 6000));
+    }
+
+    const response = currentScenario === "WALLET_NO_TOKEN"
+      ? {}
+      : { Token: "mock-google-wallet-token" };
+    res.setHeader("Content-Type", "application/json");
+    res.writeHead(200);
+    res.end(JSON.stringify(response));
+    return;
+  }
+
+  if (req.url?.startsWith("/google-wallet/save/") && req.method === "GET") {
+    const token = decodeURIComponent(req.url.slice("/google-wallet/save/".length));
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.writeHead(200);
+    res.end(`Mock Google Wallet opened successfully.\nToken: ${token}\n`);
     return;
   }
 

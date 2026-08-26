@@ -333,9 +333,9 @@ async function downloadWalletPass(payload, pass) {
 }
 
 async function addToGoogleWallet(payload) {
-  const response = await fetchGoogleWalletToken(payload, API_GOOGLE_WALLET_URL);
-  const url = `https://pay.google.com/gp/v/save/${response.Token}`
-  window.open(url, '_blank');
+  const token = await fetchGoogleWalletToken(payload, API_GOOGLE_WALLET_URL);
+  const url = `${GOOGLE_WALLET_SAVE_URL}/${encodeURIComponent(token)}`;
+  await browser.tabs.create({ url });
 }
 
 const passActions = [
