@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchBoardingPass, fetchGoogleWalletToken, BOARDINGPASSES_HEADERS } from "./api";
+import { fetchBoardingPass, fetchGoogleWalletToken, BOARDINGPASSES_HEADERS, GOOGLE_WALLET_HEADERS } from "./api";
 
 describe("API Logic", () => {
   const MOCK_URL = "http://mock-api";
@@ -94,14 +94,12 @@ describe("API Logic", () => {
       `${MOCK_URL}/v1/boardingpass`,
       {
         method: "PUT",
-        headers: {
-          "content-type": "application/json",
-          "client": "android",
-        },
+        headers: GOOGLE_WALLET_HEADERS,
         credentials: "include",
         body: JSON.stringify(payload),
       }
     );
+    expect(GOOGLE_WALLET_HEADERS).toMatchObject({ "client": "android" });
   });
 
   it("should reject failed Google Wallet requests", async () => {

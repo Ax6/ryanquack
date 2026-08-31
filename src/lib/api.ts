@@ -11,6 +11,12 @@ export const DOWNLOADPASS_HEADERS = {
   "client": "ios",
 };
 
+export const GOOGLE_WALLET_HEADERS = {
+  "content-type": "application/json",
+  "accept": "*/*",
+  "client": "android",
+};
+
 export async function fetchOrders(
   customerId: string,
   xAuthToken: string,
@@ -91,7 +97,6 @@ export async function downloadPass(
   return response.blob();
 }
 
-
 export async function fetchGoogleWalletToken(
   payload: any,
   baseUrl: string,
@@ -99,10 +104,7 @@ export async function fetchGoogleWalletToken(
 ): Promise<string> {
   const response = await fetchImpl(`${baseUrl}/v1/boardingpass`, {
     method: "PUT",
-    headers: {
-      "content-type": "application/json",
-      "client": "android",
-    },
+    headers: GOOGLE_WALLET_HEADERS,
     credentials: "include",
     body: JSON.stringify(payload),
   });

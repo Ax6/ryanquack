@@ -347,18 +347,18 @@ const passActions = [
     }
   },
   {
+    id: "google",
+    label: "Add to Google Wallet",
+    handler: async (payload) => {
+      await addToGoogleWallet(payload);
+    }
+  },
+  {
     id: "qr",
     label: "Show Ticket",
     handler: async (_payload, pass, elements) => {
       renderAztec(elements.outputBox, pass.barcode);
       elements.outputBox.classList.remove("pass-barcode");
-    }
-  },
-  {
-    id: "google",
-    label: "Add to Google Wallet",
-    handler: async (payload) => {
-      await addToGoogleWallet(payload);
     }
   }
 ];
