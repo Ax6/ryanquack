@@ -7,6 +7,7 @@ Ryanair moved boarding passes into its app. RyanQuack paddles upstream — conne
 Features:
 🎟️ Instant boarding pass — QR code rendered, scan-ready for the gate
 🍏 Apple Wallet export — download your pass for your iPhone
+🤖 Google Wallet export — add your pass straight to Google Wallet on Android
 🖼️ Image export — save a high-res PNG to print or share
 📦 Bulk download — all passengers' passes at once, bundled in a zip
 ✈️ Upcoming flights — see your trips before check-in opens

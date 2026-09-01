@@ -21,6 +21,7 @@ It's lightweight and privacy-focused — your data stays local, never leaving yo
 
 - **🎟️ Instant Boarding Passes:** Renders a scannable QR code usable at the gate (tested personally).
 - **🍏 Apple Wallet Export:** Downloads `.pkpass` files for your iPhone wallet.
+- **🤖 Google Wallet Export:** Adds your pass straight to Google Wallet for Android.
 - **📦 Bulk Download:** Downloads all boarding passes at once — Apple Wallet `.pkpass` + ticket image `.png` for every passenger, bundled into a single `passes.zip`.
 - **🖼️ Image Export:** Generates a high-res PNG of your ticket for sharing or printing.
 - **📋 Clipboard Support:** Copy the ticket image directly to your clipboard.
