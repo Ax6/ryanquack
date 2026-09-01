@@ -11,6 +11,12 @@ export const DOWNLOADPASS_HEADERS = {
   "client": "ios",
 };
 
+export const GOOGLE_WALLET_HEADERS = {
+  "content-type": "application/json",
+  "accept": "*/*",
+  "client": "android",
+};
+
 export async function fetchOrders(
   customerId: string,
   xAuthToken: string,
@@ -89,4 +95,34 @@ export async function downloadPass(
   }
 
   return response.blob();
+}
+
+export async function fetchGoogleWalletToken(
+  payload: any,
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const response = await fetchImpl(`${baseUrl}/v1/boardingpass`, {
+    method: "PUT",
+    headers: GOOGLE_WALLET_HEADERS,
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`google wallet boardingpass failed: ${response.status}`);
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error("google wallet boardingpass returned invalid JSON");
+  }
+
+  if (!data || typeof data.Token !== "string" || !data.Token.trim()) {
+    throw new Error("google wallet boardingpass returned no token");
+  }
+
+  return data.Token;
 }
