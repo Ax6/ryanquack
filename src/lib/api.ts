@@ -17,6 +17,11 @@ export const GOOGLE_WALLET_HEADERS = {
   "client": "android",
 };
 
+/** Error carrying the response status, so callers can tell transient failures from permanent ones. */
+function httpError(message: string, status: number): Error & { status: number } {
+  return Object.assign(new Error(message), { status });
+}
+
 export async function fetchOrders(
   customerId: string,
   xAuthToken: string,
@@ -39,9 +44,9 @@ export async function fetchOrders(
 
   if (!response.ok) {
     if (response.status === 403) {
-      throw new Error("LOGIN_REQUIRED");
+      throw httpError("LOGIN_REQUIRED", response.status);
     }
-    throw new Error(`orders failed: ${response.status}`);
+    throw httpError(`orders failed: ${response.status}`, response.status);
   }
 
   return response.json();
@@ -67,12 +72,12 @@ export async function fetchBoardingPass(
   if (!response.ok) {
     if (response.status === 403) {
       if (!payload.xAuthToken) {
-        throw new Error("LOGIN_REQUIRED");
+        throw httpError("LOGIN_REQUIRED", response.status);
       } else {
-        throw new Error("NO_PASSES");
+        throw httpError("NO_PASSES", response.status);
       }
     }
-    throw new Error(`boardingpasses failed: ${response.status}`);
+    throw httpError(`boardingpasses failed: ${response.status}`, response.status);
   }
 
   return response.json();
@@ -91,7 +96,7 @@ export async function downloadPass(
   });
 
   if (!response.ok) {
-    throw new Error(`downloadpass failed: ${response.status}`);
+    throw httpError(`downloadpass failed: ${response.status}`, response.status);
   }
 
   return response.blob();
@@ -110,7 +115,7 @@ export async function fetchGoogleWalletToken(
   });
 
   if (!response.ok) {
-    throw new Error(`google wallet boardingpass failed: ${response.status}`);
+    throw httpError(`google wallet boardingpass failed: ${response.status}`, response.status);
   }
 
   let data;

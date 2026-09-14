@@ -92,3 +92,31 @@ export interface OrderItem {
 export interface OrderResponse {
   items: OrderItem[];
 }
+
+function normalizeNamePart(value: unknown): string {
+  return String(value ?? "").toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
+/**
+ * Stable file name for a pass. PNR + route + flight + seat is unique per pass,
+ * the passenger name is there for readability.
+ */
+export function buildPassBaseName(pass: any): string {
+  const departure = normalizeNamePart(pass.departure?.code);
+  const arrival = normalizeNamePart(pass.arrival?.code);
+  const route = departure && arrival ? `${departure}-${arrival}` : departure || arrival;
+  const flight = normalizeNamePart(`${pass.flight?.carrierCode ?? ""}${pass.flight?.number ?? ""}`);
+
+  return [
+    normalizeNamePart(pass.pnr),
+    route,
+    flight,
+    normalizeNamePart(pass.name?.first),
+    normalizeNamePart(pass.name?.last),
+    normalizeNamePart(pass.seat?.designator),
+  ].filter(Boolean).join("_");
+}
+
+export function buildPassFilename(pass: any, ext: string): string {
+  return `${buildPassBaseName(pass)}.${ext}`;
+}

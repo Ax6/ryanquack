@@ -10,6 +10,9 @@
 import bwipjs from "bwip-js";
 import browser from "webextension-polyfill";
 import { downloadPass, fetchGoogleWalletToken } from "../lib/api";
+import { mapWithConcurrency, retry } from "../lib/concurrency";
+import { errorStatus, errorText } from "../lib/errors";
+import { buildPassBaseName, buildPassFilename } from "../lib/ryanair";
 import { buildZip } from "../lib/zip";
 import "./popup.css";
 
@@ -17,8 +20,21 @@ const statusEl = document.getElementById("status") as HTMLElement;
 const passesEl = document.getElementById("passes") as HTMLElement;
 const bulkActionsEl = document.getElementById("bulk-actions") as HTMLElement;
 const searchBarEl = document.getElementById("search-bar") as HTMLElement;
+const progressEl = document.getElementById("progress") as HTMLElement;
+const progressFillEl = document.getElementById("progress-fill") as HTMLElement;
+const failuresEl = document.getElementById("failures") as HTMLElement;
 
 const SEARCH_MIN_PASSES = 4;
+
+// Ryanair rejects large bursts of downloadpass calls, so keep few in flight.
+const BULK_CONCURRENCY = 4;
+const BULK_ATTEMPTS = 3;
+
+// Statuses seen when the endpoint is shedding load rather than refusing the pass itself.
+const RETRYABLE_STATUSES = new Set([408, 422, 425, 429, 500, 502, 503, 504]);
+
+// A bulk run owns the pass list and the bulk button until it finishes.
+let bulkRunning = false;
 
 function ensureBcMath() {
   if (typeof window.bcadd === "function") {
@@ -36,6 +52,16 @@ ensureBcMath();
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setProgress(done: number, total: number) {
+  progressEl.hidden = false;
+  progressFillEl.style.width = `${total > 0 ? Math.round((done / total) * 100) : 0}%`;
+}
+
+function hideProgress() {
+  progressEl.hidden = true;
+  progressFillEl.style.width = "0%";
 }
 
 const QUACKS = [
@@ -112,7 +138,7 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
   drawField("Date", flightDate.toLocaleDateString("en-GB", { day: '2-digit', month: 'short' }), width - 40, 180, "right");
 
   // Row 3: Seat / Seq
-  drawField("Seat", pass.seat.designator, 40, 250, "left");
+  drawField("Seat", pass.seat?.designator ?? "—", 40, 250, "left");
   drawField("Seq", String(pass.sequence), width - 40, 250, "right");
 
   // Row 4: Boarding
@@ -127,26 +153,24 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
     ctx.fillText("PRIORITY BOARDING ⚡", width / 2, 320);
   }
 
-  // Aztec Code (Draw onto this canvas)
-  // We use a temporary canvas for bwip-js to render to, then draw that image here
-  const aztecCanvas = document.createElement("canvas");
-  try {
-    bwipjs.toCanvas(aztecCanvas, {
-      bcid: "azteccode",
-      text: pass.barcode,
-      scale: 4, // Higher scale for the large image
-      backgroundcolor: "ffffff",
-      includetext: false
-    });
+  // An image without a scannable barcode is not a boarding pass, so let this throw.
+  if (!pass.barcode) throw new Error("No barcode on this pass");
 
-    // Center the Aztec code
-    const aztecSize = 300;
-    const x = (width - aztecSize) / 2;
-    const y = 350;
-    ctx.drawImage(aztecCanvas, x, y, aztecSize, aztecSize);
-  } catch (e) {
-    console.error("Failed to draw Aztec on image", e);
-  }
+  // bwip-js renders to its own canvas, which we then draw into this one.
+  const aztecCanvas = document.createElement("canvas");
+  bwipjs.toCanvas(aztecCanvas, {
+    bcid: "azteccode",
+    text: pass.barcode,
+    scale: 4, // Higher scale for the large image
+    backgroundcolor: "ffffff",
+    includetext: false
+  });
+
+  // Center the Aztec code
+  const aztecSize = 300;
+  const x = (width - aztecSize) / 2;
+  const y = 350;
+  ctx.drawImage(aztecCanvas, x, y, aztecSize, aztecSize);
 
   // RyanQuack Branding
   ctx.font = "italic 14px sans-serif";
@@ -200,7 +224,7 @@ function renderTicketDetails(container, pass) {
       <div class="ticket-section">
         <div>
           <div class="ticket-label">Seat</div>
-          <div class="ticket-value" style="font-size: 1.2em">${pass.seat.designator}</div>
+          <div class="ticket-value" style="font-size: 1.2em">${pass.seat?.designator ?? "—"}</div>
         </div>
         <div style="text-align: right">
           <div class="ticket-label">Seq</div>
@@ -246,14 +270,7 @@ function renderTicketDetails(container, pass) {
           }
         } else {
           try {
-            const url = URL.createObjectURL(blob);
-            await browser.downloads.download({
-              url,
-              filename: buildPassFilename(pass, "png"),
-              saveAs: false
-            });
-            // Give some time for the download to start before revoking
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            await downloadBlob(blob, buildPassFilename(pass, "png"));
 
             const original = btnSave.textContent;
             btnSave.textContent = getRandomQuack();
@@ -267,7 +284,8 @@ function renderTicketDetails(container, pass) {
       }, "image/png");
     } catch (err) {
       console.error(err);
-      setStatus("Export failed 🦆");
+      // The bulk path names the reason (e.g. a missing barcode), so this one should too.
+      setStatus(`Export failed 🦆 ${errorText(err)}`);
     }
   };
 
@@ -307,29 +325,19 @@ function renderAztec(container, text) {
   container.appendChild(canvas);
 }
 
-function buildPassBaseName(pass): string {
-  const normalize = (s: string) =>
-    s.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
-  const first = normalize(pass.name.first);
-  const last = normalize(pass.name.last);
-  const seat = pass.seat.designator.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return `${first}_${last}_${seat}`;
+/** Saves a blob through the downloads API, releasing the object URL once the download has started. */
+async function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  try {
+    await browser.downloads.download({ url, filename, saveAs: false });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 }
-
-function buildPassFilename(pass, ext: string): string {
-  return `${buildPassBaseName(pass)}.${ext}`;
-}
-
 
 async function downloadWalletPass(payload, pass) {
   const blob = await downloadPass(payload, API_DOWNLOAD_PASS_URL);
-  const url = URL.createObjectURL(blob);
-  await browser.downloads.download({
-    url,
-    filename: buildPassFilename(pass, "pkpass"),
-    saveAs: false,
-  });
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  await downloadBlob(blob, buildPassFilename(pass, "pkpass"));
 }
 
 async function addToGoogleWallet(payload) {
@@ -363,44 +371,229 @@ const passActions = [
   }
 ];
 
-async function downloadAllPasses(passes, payloads) {
+interface BulkJob {
+  pass: any;
+  payload: any;
+  index: number;
+}
+
+type ZipEntry = { name: string; data: Uint8Array };
+
+type PassBuild = { entries: ZipEntry[]; problem?: string };
+type PassProblem = { job: BulkJob; note: string; partial: boolean };
+
+function clearPassMarks() {
+  passesEl.querySelectorAll<HTMLElement>(".pass-failed, .pass-partial").forEach((row) => {
+    row.classList.remove("pass-failed", "pass-partial");
+    delete row.dataset.error;
+  });
+}
+
+function markPassRow(index: number, note: string, partial: boolean) {
+  const row = passesEl.querySelector<HTMLElement>(`.pass[data-index="${index}"]`);
+  if (!row) return;
+
+  row.classList.add(partial ? "pass-partial" : "pass-failed");
+  row.dataset.error = partial
+    ? `Image skipped — ${note}`
+    : `Not included in the zip — ${note}`;
+}
+
+// A missing status means the request never reached the endpoint, which is also worth a retry.
+function isRetryable(error: any): boolean {
+  const status = errorStatus(error);
+  return status === null || RETRYABLE_STATUSES.has(status);
+}
+
+async function renderPassPng(pass): Promise<Uint8Array> {
+  const canvas = await drawTicketToCanvas(pass);
+  try {
+    const blob = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error("Canvas export failed")), "image/png")
+    );
+    return new Uint8Array(await blob.arrayBuffer());
+  } finally {
+    // Release the backing bitmap whether or not the encode worked.
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
+async function buildPassFiles(job: BulkJob): Promise<PassBuild> {
+  const base = buildPassBaseName(job.pass);
+
+  // Fetch before drawing so a 13MB canvas is not held open across the network wait.
+  const pkpassBlob = await retry(
+    () => downloadPass(job.payload, API_DOWNLOAD_PASS_URL),
+    { attempts: BULK_ATTEMPTS, shouldRetry: isRetryable }
+  );
+
+  const entries: ZipEntry[] = [
+    { name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) },
+  ];
+
+  // The pkpass is already in hand, so a failed image costs the image and nothing else.
+  try {
+    entries.push({ name: `${base}.png`, data: await renderPassPng(job.pass) });
+  } catch (error) {
+    return { entries, problem: errorText(error) };
+  }
+
+  return { entries };
+}
+
+function renderProblems(problems: PassProblem[]) {
+  failuresEl.innerHTML = "";
+  failuresEl.hidden = problems.length === 0;
+
+  problems.forEach(({ job, note, partial }) => {
+    const item = document.createElement("button");
+    item.className = partial ? "failure-item failure-item-partial" : "failure-item";
+    item.title = "Jump to this pass";
+
+    const who = document.createElement("span");
+    who.className = "failure-who";
+    who.textContent = buildPassTitle(job.pass);
+
+    const why = document.createElement("span");
+    why.className = "failure-why";
+    why.textContent = partial ? `Image skipped — ${note}` : note;
+
+    item.append(who, why);
+    item.addEventListener("click", () => {
+      passesEl
+        .querySelector<HTMLElement>(`.pass[data-index="${job.index}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+
+    failuresEl.appendChild(item);
+  });
+}
+
+let hideProgressTimer: ReturnType<typeof setTimeout> | undefined;
+
+// A fetchPasses result that arrived while a bulk run owned the DOM, applied once the run ends.
+let pendingRender: { apply: (deferred: boolean) => void; replacesList: boolean } | null = null;
+
+function whenBulkIdle(apply: (deferred: boolean) => void, { replacesList = false } = {}) {
+  if (bulkRunning) pendingRender = { apply, replacesList };
+  else apply(false);
+}
+
+/** Gives the entry a distinct name inside the zip; duplicates would silently overwrite each other. */
+function uniqueEntryName(name: string, used: Set<string>, suffix: number): string {
+  const unique = used.has(name) ? name.replace(/(\.[^.]+)$/, `_${suffix}$1`) : name;
+  used.add(unique);
+  return unique;
+}
+
+async function downloadAllPasses(jobs: BulkJob[]) {
+  if (bulkRunning || jobs.length === 0) return;
+
   const btn = document.getElementById("btn-download-all") as HTMLButtonElement;
   const originalLabel = btn?.textContent ?? "Download All Passes";
+  const total = jobs.length;
+
+  bulkRunning = true;
+  clearTimeout(hideProgressTimer);
+  clearPassMarks();
+  renderProblems([]);
+
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Downloading...";
   }
-  setStatus("Preparing passes...");
-  try {
-    const fileEntries = await Promise.all(
-      passes.map(async (pass, i) => {
-        const base = buildPassBaseName(pass);
-        const [pkpassBlob, canvas] = await Promise.all([
-          downloadPass(payloads[i], API_DOWNLOAD_PASS_URL),
-          drawTicketToCanvas(pass),
-        ]);
-        const pngBlob = await new Promise<Blob>((resolve, reject) =>
-          canvas.toBlob(b => b ? resolve(b) : reject(new Error("Canvas export failed")), "image/png")
-        );
-        return [
-          { name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) },
-          { name: `${base}.png`,    data: new Uint8Array(await pngBlob.arrayBuffer()) },
-        ];
-      })
-    );
 
-    const zip = buildZip(fileEntries.flat());
-    const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
-    await browser.downloads.download({ url, filename: "passes.zip", saveAs: false });
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setStatus(`Downloaded ${passes.length} passes! ✅`);
+  // Below the concurrency cap every job starts at once, so the bar would only
+  // flicker. The status line carries the count either way.
+  const showProgress = total > BULK_CONCURRENCY;
+
+  let done = 0;
+  let hadProblems = false;
+  // Clearing the pending hide above would otherwise strand a full bar from a larger run.
+  if (showProgress) setProgress(0, total); else hideProgress();
+  setStatus(`Fetching passes... 0/${total}`);
+
+  try {
+    const results = await mapWithConcurrency(jobs, BULK_CONCURRENCY, async (job) => {
+      try {
+        return await buildPassFiles(job);
+      } finally {
+        done++;
+        if (showProgress) setProgress(done, total);
+        setStatus(`Fetching passes... ${done}/${total}`);
+      }
+    });
+
+    const files: ZipEntry[] = [];
+    const usedNames = new Set<string>();
+    const problems: PassProblem[] = [];
+    let failed = 0;
+
+    results.forEach((result, i) => {
+      const job = jobs[i];
+
+      if (result.status === "rejected") {
+        failed++;
+        const note = errorText(result.reason);
+        problems.push({ job, note, partial: false });
+        markPassRow(job.index, note, false);
+        // Row number only — a pass object carries the barcode and the passenger's details.
+        console.error(`Pass download failed (row ${job.index})`, result.reason);
+        return;
+      }
+
+      for (const entry of result.value.entries) {
+        files.push({ ...entry, name: uniqueEntryName(entry.name, usedNames, job.index) });
+      }
+
+      if (result.value.problem) {
+        problems.push({ job, note: result.value.problem, partial: true });
+        markPassRow(job.index, result.value.problem, true);
+        console.error(`Pass image failed (row ${job.index}): ${result.value.problem}`);
+      }
+    });
+
+    renderProblems(problems);
+    hadProblems = problems.length > 0;
+
+    if (files.length === 0) {
+      setStatus(`All ${total} passes failed. Tap one to jump to it:`);
+      return;
+    }
+
+    setStatus("Building zip...");
+    const zip = buildZip(files);
+    await downloadBlob(new Blob([zip], { type: "application/zip" }), "passes.zip");
+
+    if (failed > 0) {
+      setStatus(
+        `Saved ${total - failed} of ${total}. ` +
+        `${failed} failed — tap one to jump to it:`
+      );
+    } else if (problems.length > 0) {
+      setStatus(`Downloaded ${total} passes, ${problems.length} without an image:`);
+    } else {
+      setStatus(`Downloaded ${total} passes! ✅`);
+    }
   } catch (error) {
-    setStatus(`Download failed: ${error.message}`);
+    setStatus(`Download failed: ${errorText(error)}`);
   } finally {
-    if (btn) {
+    bulkRunning = false;
+    if (btn && btn.isConnected) {
       btn.disabled = false;
       btn.textContent = originalLabel;
+      // The search handler left the button alone during the run, so re-sync it with the current query.
+      searchBarEl.querySelector("input")?.dispatchEvent(new Event("input"));
     }
+    hideProgressTimer = setTimeout(hideProgress, 1500);
+
+    // Replacing the list would wipe the failure marks the user is about to act on,
+    // so a run with problems keeps its list; status-only updates always apply.
+    if (pendingRender && !(pendingRender.replacesList && hadProblems)) {
+      pendingRender.apply(true);
+    }
+    pendingRender = null;
   }
 }
 
@@ -437,8 +630,9 @@ function renderSearchBar(passes) {
 
     emptyHint.style.display = query !== "" && visible.length === 0 ? "" : "none";
 
+    // A running bulk download owns the button's label and disabled state.
     const bulkBtn = document.getElementById("btn-download-all");
-    if (bulkBtn) {
+    if (bulkBtn && !bulkRunning) {
       bulkBtn.textContent = query === ""
         ? "Download All Passes"
         : `Download Results (${visible.length})`;
@@ -478,13 +672,12 @@ function renderBulkActions(passes, payloads) {
   btn.className = "btn-download-all";
   btn.textContent = "Download All Passes";
   btn.addEventListener("click", () => {
-    const indices = Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
+    const jobs = Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
       .filter((row) => row.style.display !== "none")
       .map((row) => Number(row.dataset.index))
-      .filter((i) => !Number.isNaN(i));
-    const selectedPasses = indices.map((i) => passes[i]);
-    const selectedPayloads = indices.map((i) => payloads[i]);
-    downloadAllPasses(selectedPasses, selectedPayloads);
+      .filter((i) => !Number.isNaN(i))
+      .map((i) => ({ pass: passes[i], payload: payloads[i], index: i }));
+    downloadAllPasses(jobs);
   });
   bulkActionsEl.appendChild(btn);
 }
@@ -546,7 +739,7 @@ function renderPasses(passes, payloads) {
             renderTicketDetails(outputBox, pass);
             button.textContent = "Hide Ticket";
           } catch (error) {
-            setStatus(`Error: ${error.message}`);
+            setStatus(`Error: ${errorText(error)}`);
             button.textContent = action.label;
           }
           return;
@@ -559,7 +752,7 @@ function renderPasses(passes, payloads) {
           await action.handler(payload, pass, { outputBox });
           setStatus(READY_QUACK);
         } catch (error) {
-          setStatus(`Error: ${error.message}`);
+          setStatus(`Error: ${errorText(error)}`);
         } finally {
           button.disabled = false;
         }
@@ -667,35 +860,45 @@ async function fetchPasses() {
     const payloads = res && res.downloadPayloads ? res.downloadPayloads : [];
     const flights = res && res.flights ? res.flights : [];
 
-    passesEl.innerHTML = "";
-    bulkActionsEl.innerHTML = "";
-    searchBarEl.innerHTML = "";
+    // A bulk run holds row indexes into the list it started with, so a run in
+    // progress owns the DOM; the fresh list is applied once it finishes.
+    whenBulkIdle((deferred) => {
+      passesEl.innerHTML = "";
+      bulkActionsEl.innerHTML = "";
+      searchBarEl.innerHTML = "";
 
-    if (passes.length > 0) {
-      renderPasses(passes, payloads);
-      renderBulkActions(passes, payloads);
-      renderSearchBar(passes);
-    }
+      if (passes.length > 0) {
+        renderPasses(passes, payloads);
+        renderBulkActions(passes, payloads);
+        renderSearchBar(passes);
+      }
 
-    const upcoming = flights.filter(f => !f.isReady);
-    if (upcoming.length > 0) {
-      renderFlights(upcoming);
-    }
+      const upcoming = flights.filter(f => !f.isReady);
+      if (upcoming.length > 0) {
+        renderFlights(upcoming);
+      }
 
-    if (passes.length === 0 && upcoming.length === 0) {
-      setStatus("Nothing to quack.");
-    } else if (passes.length > 0) {
-      setStatus(READY_QUACK);
-    } else {
-      setStatus("Too early to fly! 🐣  No tickets found, they will appear once you check-in.");
-    }
+      // A late render keeps the bulk run's result in the status line.
+      if (deferred) return;
+      if (passes.length === 0 && upcoming.length === 0) {
+        setStatus("Nothing to quack.");
+      } else if (passes.length > 0) {
+        setStatus(READY_QUACK);
+      } else {
+        setStatus("Too early to fly! 🐣  No tickets found, they will appear once you check-in.");
+      }
+    }, { replacesList: true });
 
   } catch (error) {
-    const msg = error.message;
+    const msg = errorText(error);
     if (msg.includes("LOGIN_REQUIRED")) {
-      setStatus("Please log in to Ryanair.com 🔒");
+      // Still worth showing after a bulk run: an expired session is why its passes 403'd.
+      whenBulkIdle(() => setStatus("Please log in to Ryanair.com 🔒"));
     } else if (msg.includes("NO_PASSES")) {
-      setStatus("Nothing to quack.");
+      whenBulkIdle(() => setStatus("Nothing to quack."));
+    } else if (bulkRunning) {
+      // The cached list the run started from is already on screen.
+      return;
     } else if (cachedData) {
       // Network failed but we have a cache — render it regardless of TTL
       if (passesEl.innerHTML === "") {
