@@ -322,3 +322,31 @@ button:disabled {
   padding: 8px;
   border-radius: 4px;
 }
+
+/* A pass Ryanair has not issued a barcode for yet: a state, not a failure,
+   so it borrows the amber of .pass-partial rather than the red of .pass-failed. */
+.pass-no-barcode {
+  border-color: #b9770e;
+  box-shadow: 3px 3px 0px rgba(185, 119, 14, 0.15);
+}
+
+.pass-notice {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #edbb99;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #b9770e;
+}
+
+.aztec-missing {
+  max-width: 200px;
+  padding: 12px;
+  border: 1px dashed #ccc;
+  border-radius: 4px;
+  background: #f9f9f9;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #666;
+  text-align: center;
+}

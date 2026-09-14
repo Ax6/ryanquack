@@ -81,6 +81,9 @@ const server = createServer(async (req, res) => {
             <label>Passes Count: <input type="number" id="pCount" value="${passesCount}" style="width: 50px;"></label>
             <label>Upcoming Count: <input type="number" id="uCount" value="${upcomingCount}" style="width: 50px;"></label>
             <button onclick="updateCounts()">Update Counts</button>
+            <p style="margin: 8px 0 0; font-size: 12px; color: #666;">
+              Passes Count &ge; 2 includes a pass with no barcode.
+            </p>
           </div>
           <div style="display: grid; gap: 10px; max-width: 300px;">
             <button onclick="set('LOGGED_OUT')">Logged Out (403)</button>
@@ -229,8 +232,13 @@ const server = createServer(async (req, res) => {
          const body = JSON.parse(requestBody);
          const requestedIds = body.bookingIds || [];
          
+         // `barcode: null` reproduces a pass Ryanair has issued no scannable code for.
+         // Mirrors the second entry in data/boardingpasses.json, which is only served
+         // as the parse-failure fallback below. Second in the list so a Passes Count
+         // of 2 is enough to see the state.
          const MOCK_PASSENGERS = [
            { first: "Ryan",  last: "Quack",    seat: "1A",  sequence: 1,  priority: true  },
+           { first: "Sofia", last: "Lindqvist", seat: "12B", sequence: 11, priority: false, barcode: null },
            { first: "John",  last: "Smith",    seat: "14C", sequence: 42, priority: false },
            { first: "Maria", last: "Garcia",   seat: "7B",  sequence: 18, priority: true  },
            { first: "Ryan",  last: "O'Brien",  seat: "9D",  sequence: 27, priority: false },
@@ -244,7 +252,9 @@ const server = createServer(async (req, res) => {
               passId: `PASS_${id}`,
               pnr: `PASS${id-1000+1}`,
               name: { first: p.first, last: p.last },
-              barcode: `M1${p.last.toUpperCase()}/${p.first.toUpperCase()} EABCDEF STUBDUB FR ${String(id).padStart(4,'0')} 0151A${p.seat.padStart(4,' ')}100`,
+              barcode: p.barcode === null
+                ? null
+                : `M1${p.last.toUpperCase()}/${p.first.toUpperCase()} EABCDEF STUBDUB FR ${String(id).padStart(4,'0')} 0151A${p.seat.padStart(4,' ')}100`,
               departure: { code: "STN", name: "London Stansted", date: "2026-01-15T10:00:00" },
               arrival: { code: "DUB", name: "Dublin", date: "2026-01-15T11:15:00" },
               flight: { carrierCode: "FR", number: `${id}` },

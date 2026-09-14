@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, buildPassBaseName, buildPassFilename } from "./ryanair";
+import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, buildPassBaseName, buildPassFilename, hasBarcode } from "./ryanair";
 import type { BoardingPass } from "./ryanair";
 
 /**
@@ -205,5 +205,27 @@ describe("Pass file names", () => {
       }
     }
     expect(names.size).toBe(2 * 2 * 2 * 2 * 2);
+  });
+});
+
+describe("hasBarcode", () => {
+  it("accepts a pass with a scannable code", () => {
+    expect(hasBarcode(makePass({ barcode: "M1QUACK/RYAN MOCK01 DUBSTNFR 1234" }))).toBe(true);
+  });
+
+  it("rejects a pass Ryanair has not issued a code for", () => {
+    expect(hasBarcode(makePass({ barcode: null }))).toBe(false);
+    expect(hasBarcode(makePass({ barcode: undefined }))).toBe(false);
+    expect(hasBarcode(makePass({}))).toBe(false);
+  });
+
+  it("rejects a barcode that is only whitespace", () => {
+    expect(hasBarcode(makePass({ barcode: "" }))).toBe(false);
+    expect(hasBarcode(makePass({ barcode: "   " }))).toBe(false);
+    expect(hasBarcode(makePass({ barcode: "\n\t " }))).toBe(false);
+  });
+
+  it("keeps a code that is padded but not empty", () => {
+    expect(hasBarcode(makePass({ barcode: "  M1QUACK/RYAN  " }))).toBe(true);
   });
 });
