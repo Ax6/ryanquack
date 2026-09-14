@@ -29,9 +29,9 @@ describe("Ryanair Logic", () => {
   });
 
   it("should decode customer ID from token", () => {
-    // Mock JWT with sub="4suhppvsu3fz"
-    const token = "header.eyJzdWIiOiI0c3VocHB2c3UzZnoiLCJleHAiOjE3NjY4MjMzNTB9.signature";
-    expect(decodeCustomerId(token)).toBe("4suhppvsu3fz");
+    // Mock JWT with sub="testcustomer1"
+    const token = "header.eyJzdWIiOiJ0ZXN0Y3VzdG9tZXIxIiwiZXhwIjoxNzY2ODIzMzUwfQ.signature";
+    expect(decodeCustomerId(token)).toBe("testcustomer1");
   });
 
   it("should return null for invalid token", () => {
