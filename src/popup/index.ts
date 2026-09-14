@@ -114,10 +114,9 @@ function drawNoBarcodeNotice(
   y: number,
   size: number
 ) {
+  // Plain rect: roundRect needs Firefox 112+, and the manifest allows 109.
   ctx.fillStyle = "#f2f2f2";
-  ctx.beginPath();
-  ctx.roundRect(x, y, size, size, 12);
-  ctx.fill();
+  ctx.fillRect(x, y, size, size);
 
   ctx.font = "normal 16px sans-serif";
   ctx.fillStyle = "#2b2b2b";
