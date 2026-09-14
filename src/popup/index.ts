@@ -696,6 +696,7 @@ function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) 
   // Printing is worth offering for a single pass; a zip of one is not.
   if (passes.length <= 1) {
     bulkActionsEl.appendChild(buildPrintAllButton(passes));
+    maybeAutoPrint(passes);
     return;
   }
 
@@ -713,6 +714,7 @@ function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) 
   });
   bulkActionsEl.appendChild(btn);
   bulkActionsEl.appendChild(buildPrintAllButton(passes));
+  maybeAutoPrint(passes);
 }
 
 function buildPassTitle(pass: BoardingPass) {
@@ -1144,6 +1146,66 @@ function printPasses(passes: BoardingPass[]) {
   window.print();
 }
 
+/** Lays out and prints whatever the search filter currently leaves on screen. */
+function printVisiblePasses(passes: BoardingPass[]) {
+  const selected = visiblePasses(passes);
+  if (selected.length === 0) {
+    setStatus("Nothing to print 🦆");
+    return;
+  }
+
+  setStatus(`Printing ${selected.length} ${selected.length === 1 ? "pass" : "passes"}...`);
+  printPasses(selected);
+}
+
+/** The query in the search box, or "" when the list is too short to have one. */
+function currentSearchQuery(): string {
+  return searchBarEl.querySelector<HTMLInputElement>("input")?.value.trim() ?? "";
+}
+
+/**
+ * Hands the print job to the tab view, carrying the search filter across.
+ * Chrome tears the action popup down as soon as the print dialog takes focus,
+ * which would leave the user with a dialog and no document behind it.
+ */
+function openPrintTab() {
+  const query = currentSearchQuery();
+  const url = browser.runtime.getURL(POPUP_PAGE_PATH)
+    + "?view=tab&print=1"
+    + (query ? `&q=${encodeURIComponent(query)}` : "");
+
+  browser.tabs.create({ url }).catch((error) => {
+    setStatus(`Could not open a tab: ${errorText(error)}`);
+  });
+}
+
+/** `print=1` is honoured once per page load; a later re-render must not reprint. */
+let autoPrintPending = isTabView()
+  && new URLSearchParams(window.location.search).get("print") === "1";
+
+/**
+ * Replays a "Print all" click that started in the popup. Deferred by a tick so
+ * it lands after `renderSearchBar` has run in the same render pass, and the
+ * filter can be restored before the visible rows are read.
+ */
+function maybeAutoPrint(passes: BoardingPass[]) {
+  if (!autoPrintPending) return;
+  autoPrintPending = false;
+
+  setTimeout(() => {
+    const query = new URLSearchParams(window.location.search).get("q");
+    const input = searchBarEl.querySelector<HTMLInputElement>("input");
+
+    if (query && input) {
+      input.value = query;
+      // The search handler owns row visibility, so let it do the filtering.
+      input.dispatchEvent(new Event("input"));
+    }
+
+    printVisiblePasses(passes);
+  }, 0);
+}
+
 /** The bulk "Print all" control; prints whatever the search filter currently leaves visible. */
 function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
   const button = document.createElement("button");
@@ -1151,17 +1213,18 @@ function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
   button.id = "btn-print-all";
   button.className = "btn-print-all";
   button.textContent = "Print all";
-  button.title = "Lay every visible pass out as a wallet-size card and open the print dialog";
+  button.title = isTabView()
+    ? "Lay every visible pass out as a wallet-size card and open the print dialog"
+    : "Open the full-tab view and print every visible pass as a wallet-size card";
 
   button.addEventListener("click", () => {
-    const selected = visiblePasses(passes);
-    if (selected.length === 0) {
-      setStatus("Nothing to print \U0001F986");
+    // The popup cannot survive its own print dialog, so it delegates to a tab.
+    if (!isTabView()) {
+      openPrintTab();
       return;
     }
 
-    setStatus(`Printing ${selected.length} ${selected.length === 1 ? "pass" : "passes"}...`);
-    printPasses(selected);
+    printVisiblePasses(passes);
   });
 
   return button;
