@@ -491,8 +491,13 @@ async function downloadAllPasses(jobs: BulkJob[]) {
     btn.textContent = "Downloading...";
   }
 
+  // Below the concurrency cap every job starts at once, so the bar would only
+  // flicker. The status line carries the count either way.
+  const showProgress = total > BULK_CONCURRENCY;
+
   let done = 0;
-  setProgress(0, total);
+  // Clearing the pending hide above would otherwise strand a full bar from a larger run.
+  if (showProgress) setProgress(0, total); else hideProgress();
   setStatus(`Fetching passes... 0/${total}`);
 
   try {
@@ -501,7 +506,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
         return await buildPassFiles(job);
       } finally {
         done++;
-        setProgress(done, total);
+        if (showProgress) setProgress(done, total);
         setStatus(`Fetching passes... ${done}/${total}`);
       }
     });
