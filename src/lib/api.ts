@@ -1,3 +1,5 @@
+import type { BoardingPass, DownloadPayload, OrderResponse } from "./ryanair";
+
 // Define headers as constants to be reused and tested
 export const BOARDINGPASSES_HEADERS = {
   "content-type": "application/json",
@@ -27,7 +29,7 @@ export async function fetchOrders(
   xAuthToken: string,
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
-) {
+): Promise<OrderResponse> {
   const headers = {
     ...BOARDINGPASSES_HEADERS,
     "x-auth-token": xAuthToken,
@@ -56,11 +58,13 @@ export async function fetchBoardingPass(
   payload: { customerId: string; bookingIds: number[]; xAuthToken: string | null },
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
-) {
+): Promise<BoardingPass[]> {
   const headers = {
     ...BOARDINGPASSES_HEADERS,
+    // Deliberately sent even when there is no token: the endpoint answers 403 and
+    // the caller turns that into LOGIN_REQUIRED. fetch stringifies it to "null".
     "x-auth-token": payload ? payload.xAuthToken : null,
-  };
+  } as Record<string, string>;
 
   const response = await fetchImpl(`${baseUrl}/v1/boardingpasses`, {
     method: "POST",
@@ -84,10 +88,10 @@ export async function fetchBoardingPass(
 }
 
 export async function downloadPass(
-  payload: any,
+  payload: DownloadPayload,
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
-) {
+): Promise<Blob> {
   const response = await fetchImpl(`${baseUrl}/v1/downloadpass`, {
     method: "POST",
     headers: DOWNLOADPASS_HEADERS,
@@ -103,7 +107,7 @@ export async function downloadPass(
 }
 
 export async function fetchGoogleWalletToken(
-  payload: any,
+  payload: unknown,
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<string> {

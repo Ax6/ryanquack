@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, buildPassBaseName, buildPassFilename } from "./ryanair";
+import type { BoardingPass } from "./ryanair";
+
+/**
+ * Fixtures carry only the fields the function under test reads; the rest of a
+ * real BoardingPass is irrelevant here, so they are asserted into the type.
+ */
+function makePass(fields: Record<string, unknown>): BoardingPass {
+  return fields as unknown as BoardingPass;
+}
 
 describe("Ryanair Logic", () => {
   it("should identify infants correctly", () => {
@@ -8,13 +17,13 @@ describe("Ryanair Logic", () => {
   });
 
   it("should build download payload correctly", () => {
-    const mockPass = {
+    const mockPass = makePass({
       sequence: 42,
       arrival: { code: "DUB" },
       departure: { code: "STN" },
       pnr: "ABCDEF",
       paxType: "ADT"
-    };
+    });
 
     const payload = buildDownloadPayload(mockPass);
 
@@ -26,6 +35,19 @@ describe("Ryanair Logic", () => {
       recordLocator: "ABCDEF",
       isInfant: false
     });
+  });
+
+  it("should flag infants in the download payload", () => {
+    const payload = buildDownloadPayload(makePass({
+      sequence: 1,
+      arrival: { code: "DUB" },
+      departure: { code: "STN" },
+      pnr: "ABCDEF",
+      paxType: "INF"
+    }));
+
+    expect(payload.isInfant).toBe(true);
+    expect(payload.sequenceNumber).toBe("1");
   });
 
   it("should decode customer ID from token", () => {
@@ -127,7 +149,7 @@ describe("Ryanair Logic", () => {
 });
 
 describe("Pass file names", () => {
-  const pass = (overrides: any = {}) => ({
+  const pass = (overrides: Record<string, unknown> = {}) => makePass({
     pnr: "MOCK01",
     departure: { code: "DUB" },
     arrival: { code: "STN" },
@@ -150,7 +172,7 @@ describe("Pass file names", () => {
   it("drops missing parts instead of leaving stray separators", () => {
     expect(buildPassBaseName(pass({ seat: undefined }))).toBe("mock01_dub-stn_fr1234_ryan_quack");
     expect(buildPassBaseName(pass({ seat: { designator: null } }))).toBe("mock01_dub-stn_fr1234_ryan_quack");
-    expect(buildPassBaseName({})).toBe("");
+    expect(buildPassBaseName(makePass({}))).toBe("");
   });
 
   it("is unique across a booking that repeats a route with the same seat", () => {
@@ -169,14 +191,14 @@ describe("Pass file names", () => {
         for (const flightNumber of ["1234", "9876"]) {
           for (const [first, last] of [["Ryan", "Quack"], ["Dana", "Duck"]]) {
             for (const designator of ["1A", "12F"]) {
-              names.add(buildPassBaseName({
+              names.add(buildPassBaseName(makePass({
                 pnr,
                 departure: { code: from },
                 arrival: { code: to },
                 flight: { carrierCode: "FR", number: flightNumber },
                 name: { first, last },
                 seat: { designator },
-              }));
+              })));
             }
           }
         }

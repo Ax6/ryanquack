@@ -28,7 +28,7 @@ export interface RetryOptions {
   /** Total tries, including the first. */
   attempts?: number;
   baseDelayMs?: number;
-  shouldRetry?: (error: any) => boolean;
+  shouldRetry?: (error: unknown) => boolean;
   sleep?: (ms: number) => Promise<void>;
 }
 

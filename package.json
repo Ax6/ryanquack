@@ -12,6 +12,7 @@
     "mock": "node test-server/server.mjs",
     "icons": "./scripts/generate-icons.sh",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit -p .",
     "package": "npm run build && (cd dist/chrome && zip -r ../chrome-extension.zip . -x '*.DS_Store') && (cd dist/firefox && zip -r ../firefox-extension.zip . -x '*.DS_Store') && git archive -o dist/source-code.zip HEAD"
   },
   "devDependencies": {

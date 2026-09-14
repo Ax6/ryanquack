@@ -1,14 +1,19 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "customConditions": [
+      "browser"
+    ],
+    "esModuleInterop": true,
     "lib": [
       "DOM",
       "ES2020"
     ],
     "rootDir": "src",
     "outDir": "dist/tmp",
-    "strict": false,
+    "strict": true,
     "skipLibCheck": true,
     "sourceMap": false,
     "types": [
