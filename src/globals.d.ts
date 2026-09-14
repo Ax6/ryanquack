@@ -2,8 +2,6 @@ import * as WebExt from "webextension-polyfill";
 
 declare global {
   const browser: typeof WebExt;
-  const bwipjs: any;
-  const importScripts: undefined | ((...urls: string[]) => void);
 
   interface Window {
     bcadd?: (left: string, right: string) => string;
