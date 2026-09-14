@@ -270,14 +270,7 @@ function renderTicketDetails(container, pass) {
           }
         } else {
           try {
-            const url = URL.createObjectURL(blob);
-            await browser.downloads.download({
-              url,
-              filename: buildPassFilename(pass, "png"),
-              saveAs: false
-            });
-            // Give some time for the download to start before revoking
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            await downloadBlob(blob, buildPassFilename(pass, "png"));
 
             const original = btnSave.textContent;
             btnSave.textContent = getRandomQuack();
@@ -291,7 +284,8 @@ function renderTicketDetails(container, pass) {
       }, "image/png");
     } catch (err) {
       console.error(err);
-      setStatus("Export failed 🦆");
+      // The bulk path names the reason (e.g. a missing barcode), so this one should too.
+      setStatus(`Export failed 🦆 ${errorText(err)}`);
     }
   };
 
@@ -331,15 +325,19 @@ function renderAztec(container, text) {
   container.appendChild(canvas);
 }
 
+/** Saves a blob through the downloads API, releasing the object URL once the download has started. */
+async function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  try {
+    await browser.downloads.download({ url, filename, saveAs: false });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
 async function downloadWalletPass(payload, pass) {
   const blob = await downloadPass(payload, API_DOWNLOAD_PASS_URL);
-  const url = URL.createObjectURL(blob);
-  await browser.downloads.download({
-    url,
-    filename: buildPassFilename(pass, "pkpass"),
-    saveAs: false,
-  });
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  await downloadBlob(blob, buildPassFilename(pass, "pkpass"));
 }
 
 async function addToGoogleWallet(payload) {
@@ -474,6 +472,21 @@ function renderProblems(problems: PassProblem[]) {
 
 let hideProgressTimer: ReturnType<typeof setTimeout> | undefined;
 
+// A fetchPasses result that arrived while a bulk run owned the DOM, applied once the run ends.
+let pendingRender: { apply: (deferred: boolean) => void; replacesList: boolean } | null = null;
+
+function whenBulkIdle(apply: (deferred: boolean) => void, { replacesList = false } = {}) {
+  if (bulkRunning) pendingRender = { apply, replacesList };
+  else apply(false);
+}
+
+/** Gives the entry a distinct name inside the zip; duplicates would silently overwrite each other. */
+function uniqueEntryName(name: string, used: Set<string>, suffix: number): string {
+  const unique = used.has(name) ? name.replace(/(\.[^.]+)$/, `_${suffix}$1`) : name;
+  used.add(unique);
+  return unique;
+}
+
 async function downloadAllPasses(jobs: BulkJob[]) {
   if (bulkRunning || jobs.length === 0) return;
 
@@ -496,6 +509,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
   const showProgress = total > BULK_CONCURRENCY;
 
   let done = 0;
+  let hadProblems = false;
   // Clearing the pending hide above would otherwise strand a full bar from a larger run.
   if (showProgress) setProgress(0, total); else hideProgress();
   setStatus(`Fetching passes... 0/${total}`);
@@ -512,6 +526,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
     });
 
     const files: ZipEntry[] = [];
+    const usedNames = new Set<string>();
     const problems: PassProblem[] = [];
     let failed = 0;
 
@@ -528,7 +543,9 @@ async function downloadAllPasses(jobs: BulkJob[]) {
         return;
       }
 
-      files.push(...result.value.entries);
+      for (const entry of result.value.entries) {
+        files.push({ ...entry, name: uniqueEntryName(entry.name, usedNames, job.index) });
+      }
 
       if (result.value.problem) {
         problems.push({ job, note: result.value.problem, partial: true });
@@ -538,6 +555,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
     });
 
     renderProblems(problems);
+    hadProblems = problems.length > 0;
 
     if (files.length === 0) {
       setStatus(`All ${total} passes failed. Tap one to jump to it:`);
@@ -546,12 +564,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
 
     setStatus("Building zip...");
     const zip = buildZip(files);
-    const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
-    try {
-      await browser.downloads.download({ url, filename: "passes.zip", saveAs: false });
-    } finally {
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
+    await downloadBlob(new Blob([zip], { type: "application/zip" }), "passes.zip");
 
     if (failed > 0) {
       setStatus(
@@ -570,8 +583,17 @@ async function downloadAllPasses(jobs: BulkJob[]) {
     if (btn && btn.isConnected) {
       btn.disabled = false;
       btn.textContent = originalLabel;
+      // The search handler left the button alone during the run, so re-sync it with the current query.
+      searchBarEl.querySelector("input")?.dispatchEvent(new Event("input"));
     }
     hideProgressTimer = setTimeout(hideProgress, 1500);
+
+    // Replacing the list would wipe the failure marks the user is about to act on,
+    // so a run with problems keeps its list; status-only updates always apply.
+    if (pendingRender && !(pendingRender.replacesList && hadProblems)) {
+      pendingRender.apply(true);
+    }
+    pendingRender = null;
   }
 }
 
@@ -717,7 +739,7 @@ function renderPasses(passes, payloads) {
             renderTicketDetails(outputBox, pass);
             button.textContent = "Hide Ticket";
           } catch (error) {
-            setStatus(`Error: ${error.message}`);
+            setStatus(`Error: ${errorText(error)}`);
             button.textContent = action.label;
           }
           return;
@@ -730,7 +752,7 @@ function renderPasses(passes, payloads) {
           await action.handler(payload, pass, { outputBox });
           setStatus(READY_QUACK);
         } catch (error) {
-          setStatus(`Error: ${error.message}`);
+          setStatus(`Error: ${errorText(error)}`);
         } finally {
           button.disabled = false;
         }
@@ -838,41 +860,45 @@ async function fetchPasses() {
     const payloads = res && res.downloadPayloads ? res.downloadPayloads : [];
     const flights = res && res.flights ? res.flights : [];
 
-    // A bulk run holds row indexes into the list it started with, so leave the DOM alone.
-    // The background script has already cached this response for the next open.
-    if (bulkRunning) return;
+    // A bulk run holds row indexes into the list it started with, so a run in
+    // progress owns the DOM; the fresh list is applied once it finishes.
+    whenBulkIdle((deferred) => {
+      passesEl.innerHTML = "";
+      bulkActionsEl.innerHTML = "";
+      searchBarEl.innerHTML = "";
 
-    passesEl.innerHTML = "";
-    bulkActionsEl.innerHTML = "";
-    searchBarEl.innerHTML = "";
+      if (passes.length > 0) {
+        renderPasses(passes, payloads);
+        renderBulkActions(passes, payloads);
+        renderSearchBar(passes);
+      }
 
-    if (passes.length > 0) {
-      renderPasses(passes, payloads);
-      renderBulkActions(passes, payloads);
-      renderSearchBar(passes);
-    }
+      const upcoming = flights.filter(f => !f.isReady);
+      if (upcoming.length > 0) {
+        renderFlights(upcoming);
+      }
 
-    const upcoming = flights.filter(f => !f.isReady);
-    if (upcoming.length > 0) {
-      renderFlights(upcoming);
-    }
-
-    if (passes.length === 0 && upcoming.length === 0) {
-      setStatus("Nothing to quack.");
-    } else if (passes.length > 0) {
-      setStatus(READY_QUACK);
-    } else {
-      setStatus("Too early to fly! 🐣  No tickets found, they will appear once you check-in.");
-    }
+      // A late render keeps the bulk run's result in the status line.
+      if (deferred) return;
+      if (passes.length === 0 && upcoming.length === 0) {
+        setStatus("Nothing to quack.");
+      } else if (passes.length > 0) {
+        setStatus(READY_QUACK);
+      } else {
+        setStatus("Too early to fly! 🐣  No tickets found, they will appear once you check-in.");
+      }
+    }, { replacesList: true });
 
   } catch (error) {
-    if (bulkRunning) return;
-
     const msg = errorText(error);
     if (msg.includes("LOGIN_REQUIRED")) {
-      setStatus("Please log in to Ryanair.com 🔒");
+      // Still worth showing after a bulk run: an expired session is why its passes 403'd.
+      whenBulkIdle(() => setStatus("Please log in to Ryanair.com 🔒"));
     } else if (msg.includes("NO_PASSES")) {
-      setStatus("Nothing to quack.");
+      whenBulkIdle(() => setStatus("Nothing to quack."));
+    } else if (bulkRunning) {
+      // The cached list the run started from is already on screen.
+      return;
     } else if (cachedData) {
       // Network failed but we have a cache — render it regardless of TTL
       if (passesEl.innerHTML === "") {
