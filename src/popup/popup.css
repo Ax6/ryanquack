@@ -111,6 +111,14 @@ button:disabled {
   background: rgba(192, 57, 43, 0.1);
 }
 
+.failure-item-partial {
+  color: #b9770e;
+}
+
+.failure-item-partial:hover {
+  background: rgba(185, 119, 14, 0.1);
+}
+
 .failure-who {
   display: block;
   font-weight: 600;
@@ -177,14 +185,28 @@ button:disabled {
   box-shadow: 3px 3px 0px rgba(192, 57, 43, 0.15);
 }
 
-.pass-failed::after {
+.pass-partial {
+  border-color: #b9770e;
+  box-shadow: 3px 3px 0px rgba(185, 119, 14, 0.15);
+}
+
+.pass-failed::after,
+.pass-partial::after {
   content: attr(data-error);
   display: block;
   margin-top: 12px;
   padding-top: 8px;
-  border-top: 1px dashed #e6b0aa;
   font-size: 10px;
+}
+
+.pass-failed::after {
+  border-top: 1px dashed #e6b0aa;
   color: #c0392b;
+}
+
+.pass-partial::after {
+  border-top: 1px dashed #edbb99;
+  color: #b9770e;
 }
 
 .flight-summary {
