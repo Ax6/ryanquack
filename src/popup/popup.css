@@ -53,13 +53,72 @@ button:disabled {
   cursor: not-allowed;
 }
 
+#status-bar {
+  position: sticky;
+  bottom: 0;
+  margin: 12px -12px -12px -12px;
+  padding: 8px 12px 10px 12px;
+  background: #f6f1e7;
+  border-top: 1px solid rgba(43, 43, 43, 0.15);
+}
+
 #status {
-  margin: 12px auto 0 auto;
-  font-size: 10px;
-  opacity: 0.6;
+  font-size: 11px;
+  opacity: 0.7;
   text-align: center;
-  max-width: 150px;
   line-height: 1.4;
+}
+
+#progress {
+  height: 3px;
+  margin-bottom: 8px;
+  background: rgba(7, 53, 144, 0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#progress-fill {
+  width: 0%;
+  height: 100%;
+  background: #073590;
+  transition: width 0.2s ease;
+}
+
+#failures {
+  max-height: 104px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #e6b0aa;
+  overflow-y: auto;
+}
+
+.failure-item {
+  width: 100%;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: #c0392b;
+  text-align: left;
+  cursor: pointer;
+}
+
+.failure-item:hover {
+  background: rgba(192, 57, 43, 0.1);
+}
+
+.failure-who {
+  display: block;
+  font-weight: 600;
+}
+
+.failure-why {
+  display: block;
+  opacity: 0.8;
 }
 
 #bulk-actions {
@@ -111,6 +170,21 @@ button:disabled {
   box-shadow: 3px 3px 0px rgba(0,0,0,0.1);
   border-radius: 8px;
   transition: transform 0.1s ease;
+}
+
+.pass-failed {
+  border-color: #c0392b;
+  box-shadow: 3px 3px 0px rgba(192, 57, 43, 0.15);
+}
+
+.pass-failed::after {
+  content: attr(data-error);
+  display: block;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed #e6b0aa;
+  font-size: 10px;
+  color: #c0392b;
 }
 
 .flight-summary {

@@ -17,8 +17,14 @@ const statusEl = document.getElementById("status") as HTMLElement;
 const passesEl = document.getElementById("passes") as HTMLElement;
 const bulkActionsEl = document.getElementById("bulk-actions") as HTMLElement;
 const searchBarEl = document.getElementById("search-bar") as HTMLElement;
+const progressEl = document.getElementById("progress") as HTMLElement;
+const progressFillEl = document.getElementById("progress-fill") as HTMLElement;
+const failuresEl = document.getElementById("failures") as HTMLElement;
 
 const SEARCH_MIN_PASSES = 4;
+
+// Ryanair rejects large bursts of downloadpass calls, so keep few in flight.
+const BULK_CONCURRENCY = 4;
 
 function ensureBcMath() {
   if (typeof window.bcadd === "function") {
@@ -36,6 +42,16 @@ ensureBcMath();
 
 function setStatus(text) {
   statusEl.textContent = text;
+}
+
+function setProgress(done: number, total: number) {
+  progressEl.hidden = false;
+  progressFillEl.style.width = `${total > 0 ? Math.round((done / total) * 100) : 0}%`;
+}
+
+function hideProgress() {
+  progressEl.hidden = true;
+  progressFillEl.style.width = "0%";
 }
 
 const QUACKS = [
@@ -309,11 +325,15 @@ function renderAztec(container, text) {
 
 function buildPassBaseName(pass): string {
   const normalize = (s: string) =>
-    s.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+    String(s ?? "").toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+  const pnr = normalize(pass.pnr);
+  const route = `${normalize(pass.departure.code)}-${normalize(pass.arrival.code)}`;
   const first = normalize(pass.name.first);
   const last = normalize(pass.name.last);
-  const seat = pass.seat.designator.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return `${first}_${last}_${seat}`;
+  const seat = normalize(pass.seat?.designator);
+
+  // PNR + route + seat is unique per pass; the name keeps it readable.
+  return [pnr, route, first, last, seat].filter(Boolean).join("_");
 }
 
 function buildPassFilename(pass, ext: string): string {
@@ -363,37 +383,165 @@ const passActions = [
   }
 ];
 
-async function downloadAllPasses(passes, payloads) {
+interface BulkJob {
+  pass: any;
+  payload: any;
+  index: number;
+}
+
+type ZipEntry = { name: string; data: Uint8Array };
+
+/** Runs `worker` over `items` with at most `limit` active at once, settling every result. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let next = 0;
+
+  const runner = async () => {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        results[i] = { status: "fulfilled", value: await worker(items[i]) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, runner)
+  );
+
+  return results;
+}
+
+function markPassRow(index: number, error?: string) {
+  const row = passesEl.querySelector<HTMLElement>(`.pass[data-index="${index}"]`);
+  if (!row) return;
+
+  if (error) {
+    row.classList.add("pass-failed");
+    row.dataset.error = `Not included in the zip — ${error}`;
+  } else {
+    row.classList.remove("pass-failed");
+    delete row.dataset.error;
+  }
+}
+
+async function buildPassFiles(job: BulkJob): Promise<ZipEntry[]> {
+  const base = buildPassBaseName(job.pass);
+
+  // Fetch before drawing so a 13MB canvas is not held open across the network wait.
+  const pkpassBlob = await downloadPass(job.payload, API_DOWNLOAD_PASS_URL);
+  const canvas = await drawTicketToCanvas(job.pass);
+  const pngBlob = await new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob(b => b ? resolve(b) : reject(new Error("Canvas export failed")), "image/png")
+  );
+
+  // Release the backing bitmap now that the PNG is encoded.
+  canvas.width = 0;
+  canvas.height = 0;
+
+  return [
+    { name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) },
+    { name: `${base}.png`,    data: new Uint8Array(await pngBlob.arrayBuffer()) },
+  ];
+}
+
+function renderFailures(failures: { job: BulkJob; error: string }[]) {
+  failuresEl.innerHTML = "";
+  failuresEl.hidden = failures.length === 0;
+
+  failures.forEach(({ job, error }) => {
+    const item = document.createElement("button");
+    item.className = "failure-item";
+    item.title = "Jump to this pass";
+
+    const who = document.createElement("span");
+    who.className = "failure-who";
+    who.textContent = buildPassTitle(job.pass);
+
+    const why = document.createElement("span");
+    why.className = "failure-why";
+    why.textContent = error;
+
+    item.append(who, why);
+    item.addEventListener("click", () => {
+      passesEl
+        .querySelector<HTMLElement>(`.pass[data-index="${job.index}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+
+    failuresEl.appendChild(item);
+  });
+}
+
+async function downloadAllPasses(jobs: BulkJob[]) {
   const btn = document.getElementById("btn-download-all") as HTMLButtonElement;
   const originalLabel = btn?.textContent ?? "Download All Passes";
+  const total = jobs.length;
+
+  jobs.forEach(job => markPassRow(job.index));
+  renderFailures([]);
+
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Downloading...";
   }
-  setStatus("Preparing passes...");
-  try {
-    const fileEntries = await Promise.all(
-      passes.map(async (pass, i) => {
-        const base = buildPassBaseName(pass);
-        const [pkpassBlob, canvas] = await Promise.all([
-          downloadPass(payloads[i], API_DOWNLOAD_PASS_URL),
-          drawTicketToCanvas(pass),
-        ]);
-        const pngBlob = await new Promise<Blob>((resolve, reject) =>
-          canvas.toBlob(b => b ? resolve(b) : reject(new Error("Canvas export failed")), "image/png")
-        );
-        return [
-          { name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) },
-          { name: `${base}.png`,    data: new Uint8Array(await pngBlob.arrayBuffer()) },
-        ];
-      })
-    );
 
-    const zip = buildZip(fileEntries.flat());
+  let done = 0;
+  setProgress(0, total);
+  setStatus(`Fetching passes... 0/${total}`);
+
+  try {
+    const results = await mapWithConcurrency(jobs, BULK_CONCURRENCY, async (job) => {
+      try {
+        return await buildPassFiles(job);
+      } finally {
+        done++;
+        setProgress(done, total);
+        setStatus(`Fetching passes... ${done}/${total}`);
+      }
+    });
+
+    const files: ZipEntry[] = [];
+    const failures: { job: BulkJob; error: string }[] = [];
+
+    results.forEach((result, i) => {
+      if (result.status === "fulfilled") {
+        files.push(...result.value);
+        return;
+      }
+      const error = result.reason?.message ?? String(result.reason);
+      failures.push({ job: jobs[i], error });
+      markPassRow(jobs[i].index, error);
+      console.error("Pass download failed", jobs[i].pass, result.reason);
+    });
+
+    renderFailures(failures);
+
+    if (files.length === 0) {
+      setStatus(`All ${total} passes failed. Tap one to jump to it:`);
+      return;
+    }
+
+    setStatus("Building zip...");
+    const zip = buildZip(files);
     const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
     await browser.downloads.download({ url, filename: "passes.zip", saveAs: false });
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setStatus(`Downloaded ${passes.length} passes! ✅`);
+
+    if (failures.length > 0) {
+      setStatus(
+        `Saved ${total - failures.length} of ${total}. ` +
+        `${failures.length} failed — tap one to jump to it:`
+      );
+    } else {
+      setStatus(`Downloaded ${total} passes! ✅`);
+    }
   } catch (error) {
     setStatus(`Download failed: ${error.message}`);
   } finally {
@@ -401,6 +549,7 @@ async function downloadAllPasses(passes, payloads) {
       btn.disabled = false;
       btn.textContent = originalLabel;
     }
+    setTimeout(hideProgress, 1500);
   }
 }
 
@@ -478,13 +627,12 @@ function renderBulkActions(passes, payloads) {
   btn.className = "btn-download-all";
   btn.textContent = "Download All Passes";
   btn.addEventListener("click", () => {
-    const indices = Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
+    const jobs = Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
       .filter((row) => row.style.display !== "none")
       .map((row) => Number(row.dataset.index))
-      .filter((i) => !Number.isNaN(i));
-    const selectedPasses = indices.map((i) => passes[i]);
-    const selectedPayloads = indices.map((i) => payloads[i]);
-    downloadAllPasses(selectedPasses, selectedPayloads);
+      .filter((i) => !Number.isNaN(i))
+      .map((i) => ({ pass: passes[i], payload: payloads[i], index: i }));
+    downloadAllPasses(jobs);
   });
   bulkActionsEl.appendChild(btn);
 }
