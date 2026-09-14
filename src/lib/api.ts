@@ -107,7 +107,7 @@ export async function downloadPass(
 }
 
 export async function fetchGoogleWalletToken(
-  payload: unknown,
+  payload: DownloadPayload,
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<string> {
