@@ -691,7 +691,13 @@ function renderSearchBar(passes: BoardingPass[]) {
 
 function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) {
   bulkActionsEl.innerHTML = "";
-  if (passes.length <= 1) return;
+  if (passes.length === 0) return;
+
+  // Printing is worth offering for a single pass; a zip of one is not.
+  if (passes.length <= 1) {
+    bulkActionsEl.appendChild(buildPrintAllButton(passes));
+    return;
+  }
 
   const btn = document.createElement("button");
   btn.id = "btn-download-all";
@@ -706,6 +712,7 @@ function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) 
     downloadAllPasses(jobs);
   });
   bulkActionsEl.appendChild(btn);
+  bulkActionsEl.appendChild(buildPrintAllButton(passes));
 }
 
 function buildPassTitle(pass: BoardingPass) {
@@ -950,5 +957,217 @@ async function fetchPasses() {
     }
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Full-tab view
+ * ------------------------------------------------------------------ */
+
+/** Runtime path of the popup document, as the build emits it (dist/<target>/src/popup/popup.html). */
+const POPUP_PAGE_PATH = "src/popup/popup.html";
+
+/** Marks the document as the standalone tab rendering rather than the action popup. */
+const TAB_VIEW_QUERY = "?view=tab";
+
+function isTabView(): boolean {
+  return new URLSearchParams(window.location.search).get("view") === "tab";
+}
+
+/** Tab-only styling hangs off this class, so it has to land before the first render. */
+function applyViewMode() {
+  if (isTabView()) document.body.classList.add("view-tab");
+}
+
+/**
+ * Adds the header link that reopens this same document as a full browser tab.
+ * An extension page opened by its own extension needs no extra permission.
+ */
+function renderOpenInTabControl() {
+  // The tab already is the roomy view; offering it again would just spawn duplicates.
+  if (isTabView()) return;
+
+  const header = document.querySelector(".app-header");
+  if (!header) return;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "btn-open-tab";
+  button.className = "btn-open-tab";
+  button.title = "Open RyanQuack in a full browser tab";
+  button.textContent = "Open in tab ↗";
+
+  button.addEventListener("click", () => {
+    const url = browser.runtime.getURL(POPUP_PAGE_PATH) + TAB_VIEW_QUERY;
+    browser.tabs.create({ url }).catch((error) => {
+      setStatus(`Could not open a tab: ${errorText(error)}`);
+    });
+  });
+
+  header.appendChild(button);
+}
+
+/* ------------------------------------------------------------------ *
+ * Print sheet
+ * ------------------------------------------------------------------ */
+
+const PRINT_SHEET_ID = "print-sheet";
+
+/** Aztec modules stay crisp well past this; the card's CSS scales the canvas down. */
+const PRINT_AZTEC_SCALE = 3;
+
+/** Some browsers never fire `afterprint`, so the sheet is swept up on a timer too. */
+const PRINT_CLEANUP_MS = 60_000;
+
+function buildPrintField(label: string, value: string): HTMLElement {
+  const field = document.createElement("div");
+  field.className = "print-field";
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "print-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("span");
+  valueEl.className = "print-value";
+  valueEl.textContent = value;
+
+  field.append(labelEl, valueEl);
+  return field;
+}
+
+/** Draws the pass barcode into the card, or says so plainly when there is none. */
+function renderPrintAztec(slot: HTMLElement, pass: BoardingPass) {
+  if (!pass.barcode) {
+    slot.classList.add("print-aztec-missing");
+    slot.textContent = "No barcode issued for this pass";
+    return;
+  }
+
+  try {
+    const canvas = document.createElement("canvas");
+    bwipjs.toCanvas(canvas, {
+      bcid: "azteccode",
+      text: pass.barcode,
+      scale: PRINT_AZTEC_SCALE,
+      backgroundcolor: "ffffff",
+      includetext: false
+    });
+    slot.appendChild(canvas);
+  } catch (error) {
+    // One unprintable barcode should not cost the user the rest of the sheet.
+    console.error("Print barcode failed", error);
+    slot.classList.add("print-aztec-missing");
+    slot.textContent = "Barcode could not be rendered";
+  }
+}
+
+function buildPrintCard(pass: BoardingPass): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "print-card";
+
+  const route = document.createElement("div");
+  route.className = "print-route";
+  route.textContent = `${pass.departure.code} ✈ ${pass.arrival.code}`;
+
+  const name = document.createElement("div");
+  name.className = "print-name";
+  name.textContent = `${pass.name.first} ${pass.name.last}`;
+
+  const grid = document.createElement("div");
+  grid.className = "print-grid";
+
+  const dateStr = new Date(pass.departure.date)
+    .toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const timeStr = new Date(pass.boardingTime)
+    .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+  grid.append(
+    buildPrintField("Flight", `${pass.flight.carrierCode} ${pass.flight.number}`),
+    buildPrintField("Date", dateStr),
+    buildPrintField("Boarding", timeStr),
+    buildPrintField("Seat", pass.seat?.designator ?? "—"),
+    buildPrintField("Seq", String(pass.sequence)),
+    buildPrintField("Ref", pass.pnr),
+  );
+
+  card.append(route, name, grid);
+
+  if (pass.priority) {
+    const priority = document.createElement("div");
+    priority.className = "print-priority";
+    priority.textContent = "PRIORITY BOARDING";
+    card.appendChild(priority);
+  }
+
+  const aztec = document.createElement("div");
+  aztec.className = "print-aztec";
+  renderPrintAztec(aztec, pass);
+  card.appendChild(aztec);
+
+  return card;
+}
+
+/** The passes the user can currently see — the same visibility rule the bulk button uses. */
+function visiblePasses(passes: BoardingPass[]): BoardingPass[] {
+  return Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
+    .filter((row) => row.style.display !== "none")
+    .map((row) => Number(row.dataset.index))
+    .filter((index) => !Number.isNaN(index) && passes[index] !== undefined)
+    .map((index) => passes[index]);
+}
+
+/**
+ * Builds an off-screen sheet of wallet-size cards, hands it to the browser's own
+ * print dialog, and takes it back down once the dialog is gone.
+ */
+function printPasses(passes: BoardingPass[]) {
+  // A sheet stranded by a missed `afterprint` would otherwise print twice.
+  document.getElementById(PRINT_SHEET_ID)?.remove();
+
+  const sheet = document.createElement("div");
+  sheet.id = PRINT_SHEET_ID;
+  passes.forEach((pass) => sheet.appendChild(buildPrintCard(pass)));
+  document.body.appendChild(sheet);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cleaned = false;
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    clearTimeout(timer);
+    window.removeEventListener("afterprint", cleanup);
+    sheet.remove();
+  };
+
+  window.addEventListener("afterprint", cleanup);
+  timer = setTimeout(cleanup, PRINT_CLEANUP_MS);
+
+  window.print();
+}
+
+/** The bulk "Print all" control; prints whatever the search filter currently leaves visible. */
+function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "btn-print-all";
+  button.className = "btn-print-all";
+  button.textContent = "Print all";
+  button.title = "Lay every visible pass out as a wallet-size card and open the print dialog";
+
+  button.addEventListener("click", () => {
+    const selected = visiblePasses(passes);
+    if (selected.length === 0) {
+      setStatus("Nothing to print \U0001F986");
+      return;
+    }
+
+    setStatus(`Printing ${selected.length} ${selected.length === 1 ? "pass" : "passes"}...`);
+    printPasses(selected);
+  });
+
+  return button;
+}
+
+applyViewMode();
+renderOpenInTabControl();
 
 fetchPasses();

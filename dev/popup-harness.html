@@ -1,0 +1,205 @@
+<!doctype html>
+<!--
+  RyanQuack popup harness — DEVELOPMENT ONLY, never shipped in dist/.
+
+  Loads the *built* popup (dist/chrome/src/popup/popup.html plus its hashed
+  assets) as an ordinary web page, behind a stub `chrome` global that is just
+  big enough for webextension-polyfill to initialise. That makes the popup's
+  layout, the ?view=tab rendering and the print sheet inspectable in a plain
+  browser — no extension install, no Ryanair session.
+
+  How to run:
+
+      npm run build:chrome
+      python3 -m http.server 8080     # (or: npx serve -l 8080) from the repo root
+
+  then open:
+
+      http://localhost:8080/dev/popup-harness.html            popup view
+      http://localhost:8080/dev/popup-harness.html?view=tab   full-tab view
+      http://localhost:8080/dev/popup-harness.html?passes=1   single pass
+      http://localhost:8080/dev/popup-harness.html?passes=12  a crowded booking
+
+  The fixtures come from test-server/data/boardingpasses.json, fanned out over
+  a handful of passengers. The last pass deliberately has no barcode, so the
+  "no barcode" fallbacks (ticket view and print card) are always on screen.
+
+  For the real end-to-end path use the mock server instead:
+  `npm run mock` + `npm run build:chrome:mock`, then load dist/chrome unpacked.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>RyanQuack popup harness</title>
+  </head>
+  <body>
+    <script>
+      // ---------------------------------------------------------------
+      // Stub extension APIs. This must run before the popup bundle does.
+      // ---------------------------------------------------------------
+      (function () {
+        const params = new URLSearchParams(location.search);
+        const passCount = Math.max(1, Number(params.get("passes") || 5) || 5);
+
+        const PASSENGERS = [
+          { first: "Ryan",  last: "Quack",   seat: "1A",  sequence: 1,  priority: true  },
+          { first: "John",  last: "Smith",   seat: "14C", sequence: 42, priority: false },
+          { first: "Maria", last: "Garcia",  seat: "7B",  sequence: 18, priority: true  },
+          { first: "Ryan",  last: "O'Brien", seat: "9D",  sequence: 27, priority: false },
+          { first: "Liam",  last: "Murphy",  seat: "22F", sequence: 67, priority: false },
+        ];
+
+        /** Fans the single JSON fixture out into `passCount` distinct passengers. */
+        function buildPasses(template) {
+          return Array.from({ length: passCount }, (_, i) => {
+            const person = PASSENGERS[i % PASSENGERS.length];
+            // The last pass has no barcode, so the fallbacks are always exercised.
+            const hasBarcode = i < passCount - 1 || passCount === 1;
+
+            return {
+              ...template,
+              passId: `HARNESS_${i}`,
+              pnr: `QUACK${i + 1}`,
+              paxNumber: i,
+              name: { title: "MR", first: person.first, last: person.last },
+              barcode: hasBarcode ? `${template.barcode}${i}` : null,
+              seat: { ...template.seat, designator: person.seat },
+              sequence: person.sequence,
+              priority: person.priority,
+              flight: { ...template.flight, number: String(1234 + i), label: `FR${1234 + i}` },
+            };
+          });
+        }
+
+        function buildPayloads(passes) {
+          return passes.map((pass) => ({
+            sequenceNumber: String(pass.sequence),
+            lang: "en",
+            arrivalStation: pass.arrival.code,
+            departureStation: pass.departure.code,
+            recordLocator: pass.pnr,
+            isInfant: false,
+          }));
+        }
+
+        let passesResult = { passes: [], downloadPayloads: [], flights: [] };
+
+        // Shape matches PassesResult in src/lib/messages.ts.
+        window.__harnessReady = fetch("/test-server/data/boardingpasses.json")
+          .then((res) => res.json())
+          .then((fixture) => {
+            const passes = buildPasses(fixture[0]);
+            passesResult = {
+              passes,
+              downloadPayloads: buildPayloads(passes),
+              flights: [{
+                bookingId: 1001,
+                pnr: "NEXT1",
+                origin: "DUB",
+                destination: "BER",
+                date: "2026-05-20T10:00:00Z",
+                flightNumber: "FR9001",
+                checkinStatus: "nocheckin",
+                isReady: false,
+              }],
+            };
+          });
+
+        const storage = {};
+
+        // Callback-style on purpose: webextension-polyfill promisifies these.
+        window.chrome = {
+          runtime: {
+            id: "ryanquack-harness",
+            getManifest: () => ({ manifest_version: 3, name: "RyanQuack (harness)" }),
+            // Point the popup path back at this harness so "Open in tab" works here.
+            getURL: (path) => (
+              path.endsWith("popup.html")
+                ? new URL(location.pathname, location.origin).href
+                : new URL(`/dist/chrome/${path}`, location.origin).href
+            ),
+            sendMessage: (_message, callback) => {
+              window.__harnessReady.then(() => callback(passesResult));
+            },
+            onMessage: {
+              addListener() {},
+              removeListener() {},
+              hasListener: () => false,
+            },
+          },
+          storage: {
+            local: {
+              get: (keys, callback) => {
+                if (typeof keys === "function") return keys({ ...storage });
+                const wanted = typeof keys === "string" ? [keys] : Object.keys(keys || storage);
+                const out = {};
+                wanted.forEach((key) => {
+                  if (key in storage) out[key] = storage[key];
+                });
+                callback(out);
+              },
+              set: (items, callback) => {
+                Object.assign(storage, items);
+                callback();
+              },
+            },
+          },
+          downloads: {
+            download: (options, callback) => {
+              console.log("[harness] downloads.download", options.filename);
+              callback(1);
+            },
+          },
+          tabs: {
+            create: (options, callback) => {
+              console.log("[harness] tabs.create", options.url);
+              window.open(options.url, "_blank");
+              callback({ id: 1, url: options.url });
+            },
+          },
+        };
+      })();
+    </script>
+
+    <script type="module">
+      // ---------------------------------------------------------------
+      // Mount the built popup. Reading the emitted HTML keeps the harness
+      // working across rebuilds, whose asset filenames are content-hashed.
+      // ---------------------------------------------------------------
+      const BUILD_ROOT = "/dist/chrome";
+
+      const res = await fetch(`${BUILD_ROOT}/src/popup/popup.html`);
+      if (!res.ok) {
+        document.body.textContent =
+          "Build the extension first: npm run build:chrome (then serve the repo root).";
+        throw new Error(`popup.html not found: ${res.status}`);
+      }
+
+      const built = new DOMParser().parseFromString(await res.text(), "text/html");
+      // Vite emits root-absolute asset URLs, which resolve against dist/chrome.
+      const rebase = (url) => (url.startsWith("/") ? `${BUILD_ROOT}${url}` : url);
+
+      built.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
+        const styles = document.createElement("link");
+        styles.rel = "stylesheet";
+        styles.href = rebase(link.getAttribute("href"));
+        document.head.appendChild(styles);
+      });
+
+      const scripts = Array.from(built.querySelectorAll("script[src]"));
+      built.querySelectorAll("script").forEach((script) => script.remove());
+
+      document.body.insertAdjacentHTML("beforeend", built.body.innerHTML);
+
+      // Fixtures first: the popup fetches passes as soon as its module evaluates.
+      await window.__harnessReady;
+
+      scripts.forEach((script) => {
+        const tag = document.createElement("script");
+        tag.type = "module";
+        tag.src = rebase(script.getAttribute("src"));
+        document.body.appendChild(tag);
+      });
+    </script>
+  </body>
+</html>
