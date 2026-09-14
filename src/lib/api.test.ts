@@ -1,5 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 import { fetchBoardingPass, fetchGoogleWalletToken, BOARDINGPASSES_HEADERS, GOOGLE_WALLET_HEADERS } from "./api";
+import type { DownloadPayload } from "./ryanair";
+
+const WALLET_PAYLOAD: DownloadPayload = {
+  sequenceNumber: "10",
+  lang: "en",
+  arrivalStation: "STN",
+  departureStation: "DUB",
+  recordLocator: "MOCK01",
+  isInfant: false,
+};
 
 describe("API Logic", () => {
   const MOCK_URL = "http://mock-api";
@@ -73,14 +83,7 @@ describe("API Logic", () => {
   });
 
   it("should request and return a Google Wallet token", async () => {
-    const payload = {
-      sequenceNumber: "10",
-      lang: "en",
-      arrivalStation: "STN",
-      departureStation: "DUB",
-      recordLocator: "MOCK01",
-      isInfant: false,
-    };
+    const payload = WALLET_PAYLOAD;
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ Token: "wallet-token" }),
@@ -109,7 +112,7 @@ describe("API Logic", () => {
     });
 
     await expect(
-      fetchGoogleWalletToken({}, MOCK_URL, mockFetch as any)
+      fetchGoogleWalletToken(WALLET_PAYLOAD, MOCK_URL, mockFetch as any)
     ).rejects.toThrow("google wallet boardingpass failed: 500");
   });
 
@@ -120,7 +123,7 @@ describe("API Logic", () => {
     });
 
     await expect(
-      fetchGoogleWalletToken({}, MOCK_URL, mockFetch as any)
+      fetchGoogleWalletToken(WALLET_PAYLOAD, MOCK_URL, mockFetch as any)
     ).rejects.toThrow("google wallet boardingpass returned invalid JSON");
   });
 
@@ -136,7 +139,7 @@ describe("API Logic", () => {
     });
 
     await expect(
-      fetchGoogleWalletToken({}, MOCK_URL, mockFetch as any)
+      fetchGoogleWalletToken(WALLET_PAYLOAD, MOCK_URL, mockFetch as any)
     ).rejects.toThrow("google wallet boardingpass returned no token");
   });
 });
