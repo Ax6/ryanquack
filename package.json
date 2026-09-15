@@ -19,6 +19,7 @@
     "@crxjs/vite-plugin": "^2.0.0-beta.33",
     "@types/chrome": "^0.1.33",
     "@types/webextension-polyfill": "^0.12.4",
+    "happy-dom": "^20.14.5",
     "typescript": "^5.4.5",
     "vite": "^7.3.1",
     "vitest": "^3.2.4"
