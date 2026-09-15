@@ -13,6 +13,8 @@ import { downloadPass, fetchGoogleWalletToken } from "../lib/api";
 import { mapWithConcurrency, retry } from "../lib/concurrency";
 import { errorStatus, errorText } from "../lib/errors";
 import { buildPassBaseName, buildPassFilename } from "../lib/ryanair";
+import type { BoardingPass, DownloadPayload, FlightSummary } from "../lib/ryanair";
+import type { CachedPasses, PassesResult, RyqMessage } from "../lib/messages";
 import { buildZip } from "../lib/zip";
 import "./popup.css";
 
@@ -41,7 +43,7 @@ function ensureBcMath() {
     return;
   }
 
-  const toBigInt = (value) => BigInt(String(value));
+  const toBigInt = (value: string) => BigInt(String(value));
 
   window.bcadd = (left, right) => String(toBigInt(left) + toBigInt(right));
   window.bcmul = (left, right) => String(toBigInt(left) * toBigInt(right));
@@ -50,7 +52,7 @@ function ensureBcMath() {
 
 ensureBcMath();
 
-function setStatus(text) {
+function setStatus(text: string) {
   statusEl.textContent = text;
 }
 
@@ -79,7 +81,7 @@ function getRandomQuack() {
   return QUACKS[Math.floor(Math.random() * QUACKS.length)];
 }
 
-async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
+async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement> {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas context not supported");
@@ -117,7 +119,13 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
   ctx.stroke();
 
   // Helper to draw label/value pairs
-  const drawField = (label, value, x, y, align = "left") => {
+  const drawField = (
+    label: string,
+    value: string,
+    x: number,
+    y: number,
+    align: CanvasTextAlign = "left"
+  ) => {
     ctx.textAlign = align;
 
     ctx.font = "normal 14px sans-serif";
@@ -181,7 +189,7 @@ async function drawTicketToCanvas(pass): Promise<HTMLCanvasElement> {
   return canvas;
 }
 
-function renderTicketDetails(container, pass) {
+function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
   container.innerHTML = "";
 
   const flightDate = new Date(pass.departure.date);
@@ -244,10 +252,10 @@ function renderTicketDetails(container, pass) {
   container.innerHTML = html;
 
   // Handlers for the new buttons
-  const btnCopy = container.querySelector("#btn-copy");
-  const btnSave = container.querySelector("#btn-save");
+  const btnCopy = container.querySelector("#btn-copy") as HTMLButtonElement;
+  const btnSave = container.querySelector("#btn-save") as HTMLButtonElement;
 
-  const handleExport = async (action) => {
+  const handleExport = async (action: "copy" | "save") => {
     try {
       const canvas = await drawTicketToCanvas(pass);
 
@@ -292,8 +300,12 @@ function renderTicketDetails(container, pass) {
   btnCopy.addEventListener("click", () => handleExport("copy"));
   btnSave.addEventListener("click", () => handleExport("save"));
 
-  const canvasContainer = container.querySelector(".aztec-canvas");
+  const canvasContainer = container.querySelector(".aztec-canvas") as HTMLElement;
   const canvas = document.createElement("canvas");
+
+  // Same guard as the image export: without a barcode there is nothing to draw,
+  // and bwip-js would otherwise throw its own unreadable error.
+  if (!pass.barcode) throw new Error("No barcode on this pass");
 
   bwipjs.toCanvas(canvas, {
     bcid: "azteccode",
@@ -306,7 +318,7 @@ function renderTicketDetails(container, pass) {
   canvasContainer.appendChild(canvas);
 }
 
-function renderAztec(container, text) {
+function renderAztec(container: HTMLElement, text: string | null | undefined) {
   if (!text) {
     container.textContent = "No barcode available.";
     return;
@@ -335,18 +347,32 @@ async function downloadBlob(blob: Blob, filename: string) {
   }
 }
 
-async function downloadWalletPass(payload, pass) {
+async function downloadWalletPass(payload: DownloadPayload, pass: BoardingPass) {
   const blob = await downloadPass(payload, API_DOWNLOAD_PASS_URL);
   await downloadBlob(blob, buildPassFilename(pass, "pkpass"));
 }
 
-async function addToGoogleWallet(payload) {
+async function addToGoogleWallet(payload: DownloadPayload) {
   const token = await fetchGoogleWalletToken(payload, API_GOOGLE_WALLET_URL);
   const url = `${GOOGLE_WALLET_SAVE_URL}/${encodeURIComponent(token)}`;
   await browser.tabs.create({ url });
 }
 
-const passActions = [
+interface PassActionElements {
+  outputBox: HTMLElement;
+}
+
+interface PassAction {
+  id: string;
+  label: string;
+  handler: (
+    payload: DownloadPayload,
+    pass: BoardingPass,
+    elements: PassActionElements
+  ) => Promise<void>;
+}
+
+const passActions: PassAction[] = [
   {
     id: "apple",
     label: "Download Apple Wallet Pass",
@@ -372,12 +398,12 @@ const passActions = [
 ];
 
 interface BulkJob {
-  pass: any;
-  payload: any;
+  pass: BoardingPass;
+  payload: DownloadPayload;
   index: number;
 }
 
-type ZipEntry = { name: string; data: Uint8Array };
+type ZipEntry = { name: string; data: Uint8Array<ArrayBuffer> };
 
 type PassBuild = { entries: ZipEntry[]; problem?: string };
 type PassProblem = { job: BulkJob; note: string; partial: boolean };
@@ -400,12 +426,12 @@ function markPassRow(index: number, note: string, partial: boolean) {
 }
 
 // A missing status means the request never reached the endpoint, which is also worth a retry.
-function isRetryable(error: any): boolean {
+function isRetryable(error: unknown): boolean {
   const status = errorStatus(error);
   return status === null || RETRYABLE_STATUSES.has(status);
 }
 
-async function renderPassPng(pass): Promise<Uint8Array> {
+async function renderPassPng(pass: BoardingPass): Promise<Uint8Array<ArrayBuffer>> {
   const canvas = await drawTicketToCanvas(pass);
   try {
     const blob = await new Promise<Blob>((resolve, reject) =>
@@ -597,7 +623,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
   }
 }
 
-function renderSearchBar(passes) {
+function renderSearchBar(passes: BoardingPass[]) {
   searchBarEl.innerHTML = "";
   if (passes.length < SEARCH_MIN_PASSES) return;
 
@@ -663,7 +689,7 @@ function renderSearchBar(passes) {
   searchBarEl.appendChild(emptyHint);
 }
 
-function renderBulkActions(passes, payloads) {
+function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) {
   bulkActionsEl.innerHTML = "";
   if (passes.length <= 1) return;
 
@@ -682,11 +708,11 @@ function renderBulkActions(passes, payloads) {
   bulkActionsEl.appendChild(btn);
 }
 
-function buildPassTitle(pass) {
+function buildPassTitle(pass: BoardingPass) {
   return `${pass.pnr} · ${pass.departure.code} → ${pass.arrival.code} · ${pass.name.first} ${pass.name.last}`;
 }
 
-function buildPassSearchHaystack(pass): string {
+function buildPassSearchHaystack(pass: BoardingPass): string {
   return [
     pass.pnr,
     pass.name.first,
@@ -698,7 +724,7 @@ function buildPassSearchHaystack(pass): string {
   ].join(" ").toLowerCase();
 }
 
-function renderPasses(passes, payloads) {
+function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
   passes.forEach((pass, index) => {
     const payload = payloads[index];
     const row = document.createElement("div");
@@ -767,7 +793,7 @@ function renderPasses(passes, payloads) {
   });
 }
 
-function renderFlights(flights) {
+function renderFlights(flights: FlightSummary[]) {
   flights.forEach((flight) => {
     const row = document.createElement("div");
     row.className = "flight-summary";
@@ -818,11 +844,12 @@ async function fetchPasses() {
   setStatus("Paddling to Ryanair...");
 
   // 1. Read cache up front (used for optimistic pre-load AND as offline fallback)
-  let cachedData: { passes: any[]; downloadPayloads: any[]; flights: any[]; cachedAt?: number } | null = null;
+  let cachedData: CachedPasses | null = null;
   try {
     const cache = await browser.storage.local.get("cachedPasses");
     if (cache && cache.cachedPasses) {
-      cachedData = cache.cachedPasses;
+      // storage.local hands back `unknown`; this is the shape the background wrote.
+      cachedData = cache.cachedPasses as CachedPasses;
     }
   } catch (e) {
     console.error("Cache read error", e);
@@ -852,9 +879,10 @@ async function fetchPasses() {
 
   // 3. Network Fetch (always)
   try {
-    const res = (await browser.runtime.sendMessage({
+    // The fields are read defensively below, so the response is typed as partial.
+    const res = (await browser.runtime.sendMessage<RyqMessage, PassesResult>({
       type: "RYQ_FETCH_BOARDING_PASSES",
-    })) as any;
+    })) as Partial<PassesResult> | undefined;
 
     const passes = res && res.passes ? res.passes : [];
     const payloads = res && res.downloadPayloads ? res.downloadPayloads : [];

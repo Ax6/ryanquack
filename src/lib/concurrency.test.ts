@@ -68,7 +68,7 @@ describe("retry", () => {
     const op = vi.fn().mockRejectedValue(Object.assign(new Error("bad"), { status: 400 }));
 
     await expect(
-      retry(op, { attempts: 3, sleep: noSleep, shouldRetry: (e) => e.status !== 400 })
+      retry(op, { attempts: 3, sleep: noSleep, shouldRetry: (e) => (e as { status?: number }).status !== 400 })
     ).rejects.toThrow("bad");
     expect(op).toHaveBeenCalledTimes(1);
   });

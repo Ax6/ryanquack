@@ -11,7 +11,8 @@ function crc32(data: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export function buildZip(files: { name: string; data: Uint8Array }[]): Uint8Array {
+/** Returns a plain (non-shared) buffer view, so the result is a valid `BlobPart`. */
+export function buildZip(files: { name: string; data: Uint8Array }[]): Uint8Array<ArrayBuffer> {
   const enc = new TextEncoder();
   const localParts: Uint8Array[] = [];
   const centralParts: Uint8Array[] = [];

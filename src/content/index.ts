@@ -8,14 +8,16 @@
  * (at your option) any later version.
  */
 import browser from "webextension-polyfill";
+import type { RyqMessage, Tokens } from "../lib/messages";
+import { readMessageType } from "../lib/messages";
 
-function extractTokens() {
+function extractTokens(): Tokens | null {
     // TODO: Pull auth tokens from DOM, localStorage, or a page-bridge.
     return null;
   }
 
-  browser.runtime.onMessage.addListener((message) => {
-    if (!message || message.type !== "RYQ_GET_TOKENS") {
+  browser.runtime.onMessage.addListener((message: unknown) => {
+    if (readMessageType(message) !== "RYQ_GET_TOKENS") {
       return;
     }
 
@@ -25,6 +27,6 @@ function extractTokens() {
       return Promise.resolve({ tokens });
     }
 
-    return browser.runtime.sendMessage({ type: "RYQ_GET_TOKENS" })
+    return browser.runtime.sendMessage<RyqMessage, Tokens>({ type: "RYQ_GET_TOKENS" })
       .then((result) => ({ tokens: result }));
   });

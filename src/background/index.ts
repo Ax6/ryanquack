@@ -9,9 +9,12 @@
  */
 import browser from "webextension-polyfill";
 import { buildDownloadPayload, decodeCustomerId, extractFlightsFromOrders, filterReadyBookings } from "../lib/ryanair";
+import type { BoardingPass, DownloadPayload } from "../lib/ryanair";
+import type { CachedPasses, PassesResult, Tokens } from "../lib/messages";
+import { readMessageType } from "../lib/messages";
 import { fetchBoardingPass, fetchOrders } from "../lib/api";
 
-async function getTokens() {
+async function getTokens(): Promise<Tokens> {
   const cookie = await browser.cookies.get({
     url: "https://www.ryanair.com",
     name: "SESSION_COOKIE"
@@ -22,16 +25,17 @@ async function getTokens() {
   };
 }
 
-browser.runtime.onMessage.addListener((message, sender) => {
-  if (!message || !message.type) {
+browser.runtime.onMessage.addListener((message: unknown) => {
+  const type = readMessageType(message);
+  if (!type) {
     return;
   }
 
-  if (message.type === "RYQ_GET_TOKENS") {
+  if (type === "RYQ_GET_TOKENS") {
     return getTokens();
   }
 
-  if (message.type === "RYQ_FETCH_BOARDING_PASSES") {
+  if (type === "RYQ_FETCH_BOARDING_PASSES") {
     return getTokens().then(async (tokens) => {
       const token = tokens.xAuthToken;
       if (!token) {
@@ -50,8 +54,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const flights = extractFlightsFromOrders(orders);
       const bookingIds = filterReadyBookings(flights);
 
-      let passes: any[] = [];
-      let downloadPayloads: any[] = [];
+      let passes: BoardingPass[] = [];
+      let downloadPayloads: DownloadPayload[] = [];
 
       // 3. Fetch Boarding Passes ONLY if we have ready bookings
       if (bookingIds.length > 0) {
@@ -63,14 +67,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
         downloadPayloads = passes.map(buildDownloadPayload);
       }
 
-      const result = {
+      const result: PassesResult = {
         flights,
         passes,
         downloadPayloads
       };
 
       // Cache for offline support
-      browser.storage.local.set({ cachedPasses: { ...result, cachedAt: Date.now() } });
+      const cached: CachedPasses = { ...result, cachedAt: Date.now() };
+      browser.storage.local.set({ cachedPasses: cached });
 
       return result;
     });

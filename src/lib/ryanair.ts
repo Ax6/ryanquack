@@ -1,3 +1,87 @@
+/** Passenger name as the boarding pass endpoint returns it. */
+export interface PassName {
+  title: string;
+  first: string;
+  last: string;
+}
+
+/** One end of a leg: `departure` and `arrival` share this shape. */
+export interface PassStation {
+  code: string;
+  name: string;
+  /** Local time, no zone suffix. */
+  date: string;
+  dateUTC: string;
+  dateUTCOffset: string;
+  epoch: number;
+}
+
+export interface PassSeat {
+  designator: string;
+  location?: string;
+  paid?: boolean;
+  door?: number;
+  isPrime?: boolean;
+}
+
+export interface PassFlight {
+  carrierCode: string;
+  number: string;
+  label: string;
+  operatedBy: string;
+}
+
+/** Extras attached to the pass (bags, etc.); `note` is a JSON string. */
+export interface PassSsrDetail {
+  code: string;
+  qty: number;
+  note: string;
+}
+
+/** A single boarding pass, as returned by `/v1/boardingpasses`. */
+export interface BoardingPass {
+  passId: string;
+  hash: string;
+  pnr: string;
+  isConnectingFlight: boolean;
+  paxNumber: number;
+  paxType: string;
+  name: PassName;
+  /** Ryanair sometimes returns a pass with no barcode, so callers must guard. */
+  barcode?: string | null;
+  departure: PassStation;
+  arrival: PassStation;
+  ssrsDetails: PassSsrDetail[];
+  /** Infants travel on a lap, so they have no seat. */
+  seat?: PassSeat | null;
+  priority: boolean;
+  fast: boolean;
+  leisurePlus: boolean;
+  timeSaver: boolean;
+  businessPlus: boolean;
+  familyPlus: boolean;
+  regular: boolean;
+  sequence: number;
+  boardingTime: string;
+  boardingTimeEpoch: number;
+  flight: PassFlight;
+  ticketType: string;
+  discount: string;
+  docNationality: string;
+  docCountryOfIssue: string;
+  authorizationStatus: string;
+}
+
+/** Request body for `/v1/downloadpass` and the Google Wallet endpoint. */
+export interface DownloadPayload {
+  sequenceNumber: string;
+  lang: string;
+  arrivalStation: string;
+  departureStation: string;
+  recordLocator: string;
+  isInfant: boolean;
+}
+
 export interface FlightSummary {
   bookingId: number;
   pnr: string;
@@ -46,7 +130,7 @@ export function isInfant(paxType: string): boolean {
   return paxType === "INF";
 }
 
-export function buildDownloadPayload(passItem: any) {
+export function buildDownloadPayload(passItem: BoardingPass): DownloadPayload {
   return {
     sequenceNumber: String(passItem.sequence),
     lang: "en",
@@ -100,8 +184,11 @@ function normalizeNamePart(value: unknown): string {
 /**
  * Stable file name for a pass. PNR + route + flight + seat is unique per pass,
  * the passenger name is there for readability.
+ *
+ * Every part is optional-chained on purpose: a pass missing a field still gets a
+ * name out of whatever is left rather than throwing.
  */
-export function buildPassBaseName(pass: any): string {
+export function buildPassBaseName(pass: BoardingPass): string {
   const departure = normalizeNamePart(pass.departure?.code);
   const arrival = normalizeNamePart(pass.arrival?.code);
   const route = departure && arrival ? `${departure}-${arrival}` : departure || arrival;
@@ -117,6 +204,6 @@ export function buildPassBaseName(pass: any): string {
   ].filter(Boolean).join("_");
 }
 
-export function buildPassFilename(pass: any, ext: string): string {
+export function buildPassFilename(pass: BoardingPass, ext: string): string {
   return `${buildPassBaseName(pass)}.${ext}`;
 }
