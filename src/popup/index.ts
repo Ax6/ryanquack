@@ -470,6 +470,7 @@ interface BulkJob {
 type ZipEntry = { name: string; data: Uint8Array<ArrayBuffer> };
 
 type PassBuild = { entries: ZipEntry[]; problem?: string };
+const NO_WALLET_PASS_NOTE = "No wallet pass — Ryanair hasn't issued a barcode yet";
 type PassProblem = { job: BulkJob; note: string; partial: boolean };
 
 function clearPassMarks() {
@@ -484,9 +485,7 @@ function markPassRow(index: number, note: string, partial: boolean) {
   if (!row) return;
 
   row.classList.add(partial ? "pass-partial" : "pass-failed");
-  row.dataset.error = partial
-    ? `Image skipped — ${note}`
-    : `Not included in the zip — ${note}`;
+  row.dataset.error = partial ? note : `Not included in the zip — ${note}`;
 }
 
 // A missing status means the request never reached the endpoint, which is also worth a retry.
@@ -511,25 +510,27 @@ async function renderPassPng(pass: BoardingPass): Promise<Uint8Array<ArrayBuffer
 
 async function buildPassFiles(job: BulkJob): Promise<PassBuild> {
   const base = buildPassBaseName(job.pass);
+  const entries: ZipEntry[] = [];
 
-  // Fetch before drawing so a 13MB canvas is not held open across the network wait.
-  const pkpassBlob = await retry(
-    () => downloadPass(job.payload, API_DOWNLOAD_PASS_URL),
-    { attempts: BULK_ATTEMPTS, shouldRetry: isRetryable }
-  );
-
-  const entries: ZipEntry[] = [
-    { name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) },
-  ];
+  // A wallet pass is only a container for the barcode, so there is nothing to
+  // fetch here and the row's wallet buttons are disabled for the same reason.
+  if (hasBarcode(job.pass)) {
+    // Fetch before drawing so a 13MB canvas is not held open across the network wait.
+    const pkpassBlob = await retry(
+      () => downloadPass(job.payload, API_DOWNLOAD_PASS_URL),
+      { attempts: BULK_ATTEMPTS, shouldRetry: isRetryable }
+    );
+    entries.push({ name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) });
+  }
 
   // The pkpass is already in hand, so a failed image costs the image and nothing else.
   try {
     entries.push({ name: `${base}.png`, data: await renderPassPng(job.pass) });
   } catch (error) {
-    return { entries, problem: errorText(error) };
+    return { entries, problem: `Image skipped — ${errorText(error)}` };
   }
 
-  return { entries };
+  return hasBarcode(job.pass) ? { entries } : { entries, problem: NO_WALLET_PASS_NOTE };
 }
 
 function renderProblems(problems: PassProblem[]) {
@@ -547,7 +548,7 @@ function renderProblems(problems: PassProblem[]) {
 
     const why = document.createElement("span");
     why.className = "failure-why";
-    why.textContent = partial ? `Image skipped — ${note}` : note;
+    why.textContent = note;
 
     item.append(who, why);
     item.addEventListener("click", () => {
@@ -640,7 +641,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
       if (result.value.problem) {
         problems.push({ job, note: result.value.problem, partial: true });
         markPassRow(job.index, result.value.problem, true);
-        console.error(`Pass image failed (row ${job.index}): ${result.value.problem}`);
+        console.error(`Pass incomplete (row ${job.index}): ${result.value.problem}`);
       }
     });
 
