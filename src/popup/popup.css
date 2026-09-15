@@ -424,6 +424,11 @@ body.view-tab #passes:has(> .pass ~ .pass) {
   align-items: start;
 }
 
+/* The body grid hands #passes the leftover height; keep the rows packed at the top. */
+body.view-tab #passes {
+  align-content: start;
+}
+
 /* ------------------------------------------------------------------ *
  * Print sheet — off-screen until the print dialog asks for it
  * ------------------------------------------------------------------ */
@@ -433,9 +438,11 @@ body.view-tab #passes:has(> .pass ~ .pass) {
 }
 
 @media print {
+  /* Zero page margin also stops Chrome printing its date/URL header and footer;
+     the sheet carries the 10mm margin as padding instead. */
   @page {
     size: A4 portrait;
-    margin: 10mm;
+    margin: 0;
   }
 
   body {
@@ -460,10 +467,12 @@ body.view-tab #passes:has(> .pass ~ .pass) {
   }
 
   #print-sheet {
-    /* 190mm of printable width fits two 64mm cards plus the 6mm gap; `auto-fill`
-       adds a third column on wider paper instead of overflowing A4. */
+    /* Three columns across 190mm (A4 minus 10mm each side): 59mm cards, close to
+       wallet width. With 80mm rows that is nine passes per page. */
     display: grid !important;
-    grid-template-columns: repeat(auto-fill, 64mm);
+    box-sizing: border-box;
+    padding: 10mm;
+    grid-template-columns: repeat(3, 1fr);
     justify-content: start;
     align-content: start;
     gap: 6mm;
@@ -471,8 +480,8 @@ body.view-tab #passes:has(> .pass ~ .pass) {
 
   .print-card {
     box-sizing: border-box;
-    width: 64mm;
-    height: 106mm; /* 3:5-ish, so two rows fit an A4 page */
+    width: 100%;
+    height: 80mm; /* content runs ~70mm; three rows plus gaps fit one A4 page */
     padding: 4mm;
     display: flex;
     flex-direction: column;
