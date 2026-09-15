@@ -667,7 +667,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
         `${failed} failed — tap one to jump to it:`
       );
     } else if (problems.length > 0) {
-      setStatus(`Downloaded ${total} passes, ${problems.length} without an image:`);
+      setStatus(`Downloaded ${total} passes, ${problems.length} with missing files — see details:`);
     } else {
       setStatus(`Downloaded ${total} passes! ✅`);
     }
@@ -771,7 +771,6 @@ function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) 
   // Printing is worth offering for a single pass; a zip of one is not.
   if (passes.length <= 1) {
     bulkActionsEl.appendChild(buildPrintAllButton(passes));
-    maybeAutoPrint(passes);
     return;
   }
 
@@ -789,7 +788,6 @@ function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) 
   });
   bulkActionsEl.appendChild(btn);
   bulkActionsEl.appendChild(buildPrintAllButton(passes));
-  maybeAutoPrint(passes);
 }
 
 function buildPassTitle(pass: BoardingPass) {
@@ -1005,6 +1003,10 @@ async function fetchPasses() {
         renderFlights(upcoming);
       }
 
+      // Only the completed refresh can trigger automatic printing. The
+      // optimistic cache may still contain an old seat or barcode.
+      maybeAutoPrint(passes);
+
       // A late render keeps the bulk run's result in the status line.
       if (deferred) return;
       if (passes.length === 0 && upcoming.length === 0) {
@@ -1043,7 +1045,13 @@ async function fetchPasses() {
           renderFlights(upcoming);
         }
       }
-      setStatus("Offline (Cached) ☁️");
+      if (autoPrintPending) {
+        autoPrintPending = false;
+        restorePrintQuery();
+        setStatus("Offline (Cached) ☁️ Review the cached passes, then choose Print all to print them.");
+      } else {
+        setStatus("Offline (Cached) ☁️");
+      }
     } else {
       setStatus(`Error: ${msg}`);
     }
@@ -1123,7 +1131,7 @@ function buildPrintField(label: string, value: string): HTMLElement {
 }
 
 function renderPrintAztec(slot: HTMLElement, pass: BoardingPass) {
-  if (!pass.barcode) {
+  if (!hasBarcode(pass)) {
     slot.classList.add("print-aztec-missing");
     slot.textContent = "No barcode issued for this pass";
     return;
@@ -1133,7 +1141,7 @@ function renderPrintAztec(slot: HTMLElement, pass: BoardingPass) {
     const canvas = document.createElement("canvas");
     bwipjs.toCanvas(canvas, {
       bcid: "azteccode",
-      text: pass.barcode,
+      text: String(pass.barcode),
       scale: PRINT_AZTEC_SCALE,
       backgroundcolor: "ffffff",
       includetext: false
@@ -1272,26 +1280,26 @@ let autoPrintPending = isTabView()
   && new URLSearchParams(window.location.search).get("print") === "1";
 
 /**
- * Replays a "Print all" click that started in the popup. Deferred by a tick so
- * it lands after `renderSearchBar` has run in the same render pass, and the
- * filter can be restored before the visible rows are read.
+ * Replays a "Print all" click only after the network result has been rendered.
+ * Cached data stays available for manual printing if the refresh fails.
  */
 function maybeAutoPrint(passes: BoardingPass[]) {
   if (!autoPrintPending) return;
   autoPrintPending = false;
 
   setTimeout(() => {
-    const query = new URLSearchParams(window.location.search).get("q");
-    const input = searchBarEl.querySelector<HTMLInputElement>("input");
-
-    if (query && input) {
-      input.value = query;
-      // The search handler owns row visibility, so let it do the filtering.
-      input.dispatchEvent(new Event("input"));
-    }
-
+    restorePrintQuery();
     printVisiblePasses(passes);
   }, 0);
+}
+
+function restorePrintQuery() {
+  const query = new URLSearchParams(window.location.search).get("q");
+  const input = searchBarEl.querySelector<HTMLInputElement>("input");
+  if (query && input) {
+    input.value = query;
+    input.dispatchEvent(new Event("input"));
+  }
 }
 
 function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
