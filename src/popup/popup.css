@@ -467,15 +467,27 @@ body.view-tab #passes {
   }
 
   #print-sheet {
-    /* Three columns across 190mm (A4 minus 10mm each side): 59mm cards, close to
-       wallet width. With 80mm rows that is nine passes per page. */
-    display: grid !important;
+    display: block !important;
+  }
+
+  /* One A4 page each: the padding is the print margin, so it repeats on every
+     page (a margin on the sheet itself would only pad the first). Three columns
+     across 190mm gives 59mm cards, close to wallet width; three 80mm rows fit. */
+  .print-page {
+    display: grid;
     box-sizing: border-box;
     padding: 10mm;
     grid-template-columns: repeat(3, 1fr);
     justify-content: start;
     align-content: start;
     gap: 6mm;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .print-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
   }
 
   .print-card {

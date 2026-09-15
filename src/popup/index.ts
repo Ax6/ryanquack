@@ -1100,6 +1100,8 @@ const PRINT_AZTEC_SCALE = 3;
 
 /** Some browsers never fire `afterprint`, so the sheet is swept up on a timer too. */
 const PRINT_CLEANUP_MS = 60_000;
+/** Three 80mm rows of three cards fill an A4 page; each page carries its own margins. */
+const PRINT_CARDS_PER_PAGE = 9;
 
 function buildPrintField(label: string, value: string): HTMLElement {
   const field = document.createElement("div");
@@ -1208,7 +1210,14 @@ function printPasses(passes: BoardingPass[]) {
 
   const sheet = document.createElement("div");
   sheet.id = PRINT_SHEET_ID;
-  passes.forEach((pass) => sheet.appendChild(buildPrintCard(pass)));
+  // Explicit pages, so every page (not just the first) gets the same padding.
+  for (let start = 0; start < passes.length; start += PRINT_CARDS_PER_PAGE) {
+    const page = document.createElement("div");
+    page.className = "print-page";
+    passes.slice(start, start + PRINT_CARDS_PER_PAGE)
+      .forEach((pass) => page.appendChild(buildPrintCard(pass)));
+    sheet.appendChild(page);
+  }
   document.body.appendChild(sheet);
 
   let timer: ReturnType<typeof setTimeout> | undefined;
