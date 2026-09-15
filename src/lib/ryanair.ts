@@ -130,6 +130,15 @@ export function isInfant(paxType: string): boolean {
   return paxType === "INF";
 }
 
+/**
+ * Whether the pass carries a scannable code. Ryanair returns the barcode as
+ * null or an empty string until it has one, which is a state of the pass rather
+ * than a failure, so every caller asks this instead of testing truthiness.
+ */
+export function hasBarcode(pass: BoardingPass): boolean {
+  return typeof pass.barcode === "string" && pass.barcode.trim() !== "";
+}
+
 export function buildDownloadPayload(passItem: BoardingPass): DownloadPayload {
   return {
     sequenceNumber: String(passItem.sequence),

@@ -63,5 +63,70 @@
     "docNationality": "IE",
     "docCountryOfIssue": "IE",
     "authorizationStatus": "NONE"
+  },
+  {
+    "passId": "MOCK02_DUBSTN_FR1234_11_ADT",
+    "hash": "11111111111111111111111111111111",
+    "pnr": "MOCK02",
+    "isConnectingFlight": false,
+    "paxNumber": 1,
+    "paxType": "ADT",
+    "name": {
+      "title": "MS",
+      "first": "Sofia",
+      "last": "Lindqvist"
+    },
+    "barcode": null,
+    "departure": {
+      "code": "DUB",
+      "name": "Dublin",
+      "date": "2026-01-15T06:00:00",
+      "dateUTC": "2026-01-15T06:00:00Z",
+      "dateUTCOffset": "UTC+0000",
+      "epoch": 1768456800000
+    },
+    "arrival": {
+      "code": "STN",
+      "name": "London Stansted",
+      "date": "2026-01-15T07:15:00",
+      "dateUTC": "2026-01-15T07:15:00Z",
+      "dateUTCOffset": "UTC+0000",
+      "epoch": 1768461300000
+    },
+    "ssrsDetails": [
+      {
+        "code": "CBAG",
+        "qty": 1,
+        "note": "[{\"o\": \"D\", \"c\": \"EUR\", \"a\": 19.99}]"
+      }
+    ],
+    "seat": {
+      "designator": "12B",
+      "location": "Middle",
+      "paid": false,
+      "door": 0,
+      "isPrime": false
+    },
+    "priority": false,
+    "fast": false,
+    "leisurePlus": false,
+    "timeSaver": false,
+    "businessPlus": false,
+    "familyPlus": false,
+    "regular": false,
+    "sequence": 11,
+    "boardingTime": "2026-01-15T05:30:00",
+    "boardingTimeEpoch": 1768455000000,
+    "flight": {
+      "carrierCode": "FR",
+      "number": "1234",
+      "label": "FR1234",
+      "operatedBy": "Ryanair"
+    },
+    "ticketType": "RegularTicket",
+    "discount": "",
+    "docNationality": "IE",
+    "docCountryOfIssue": "IE",
+    "authorizationStatus": "NONE"
   }
 ]
