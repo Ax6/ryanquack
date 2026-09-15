@@ -77,8 +77,8 @@ const QUACKS = [
 
 const READY_QUACK = "Ready to quack...";
 
-// Shown wherever a pass would otherwise show its Aztec code. The API never says
-// why the barcode is missing, so the copy names the usual cause and stops there.
+// The API never says why the barcode is missing, so the copy names the usual
+// cause and stops short of asserting it.
 const NO_BARCODE_NOTICE =
   "No barcode yet. Ryanair hasn't issued a scannable code for this pass, usually because " +
   "travel documents still need to be checked. Check the booking on ryanair.com.";
@@ -171,21 +171,25 @@ async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement
     value: string,
     x: number,
     y: number,
-    align: CanvasTextAlign = "left"
+    align: CanvasTextAlign = "left",
+    // Condenses rather than overruns: long passenger names would otherwise
+    // collide with the field opposite them.
+    maxWidth?: number
   ) => {
     ctx.textAlign = align;
 
     ctx.font = "normal 14px sans-serif";
     ctx.fillStyle = "#666666";
-    ctx.fillText(label.toUpperCase(), x, y);
+    ctx.fillText(label.toUpperCase(), x, y, maxWidth);
 
     ctx.font = "bold 20px sans-serif";
     ctx.fillStyle = "#000000";
-    ctx.fillText(value, x, y + 25);
+    ctx.fillText(value, x, y + 25, maxWidth);
   };
 
   // Row 1: Passenger / Booking ref
-  drawField("Passenger", `${pass.name.first} ${pass.name.last}`, 40, 110, "left");
+  // 323px is the gap to the booking reference opposite.
+  drawField("Passenger", `${pass.name.first} ${pass.name.last}`, 40, 110, "left", 315);
   drawField("Booking ref", pass.pnr, width - 40, 110, "right");
 
   // Row 2: Flight / Date
@@ -361,8 +365,7 @@ function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
   const canvasContainer = container.querySelector(".aztec-canvas") as HTMLElement;
   const barcode = hasBarcode(pass) ? String(pass.barcode) : null;
 
-  // The details above are the point of the ticket view, so a pass with no
-  // barcode keeps them and explains the empty square instead of throwing.
+  // The details are the point of this view, so keep them and explain the gap.
   if (barcode === null) {
     const notice = document.createElement("div");
     notice.className = "aztec-missing";
@@ -471,6 +474,7 @@ interface BulkJob {
 type ZipEntry = { name: string; data: Uint8Array<ArrayBuffer> };
 
 type PassBuild = { entries: ZipEntry[]; problem?: string };
+const NO_WALLET_PASS_NOTE = "No wallet pass — Ryanair hasn't issued a barcode yet";
 type PassProblem = { job: BulkJob; note: string; partial: boolean };
 
 function clearPassMarks() {
@@ -485,9 +489,7 @@ function markPassRow(index: number, note: string, partial: boolean) {
   if (!row) return;
 
   row.classList.add(partial ? "pass-partial" : "pass-failed");
-  row.dataset.error = partial
-    ? `Image skipped — ${note}`
-    : `Not included in the zip — ${note}`;
+  row.dataset.error = partial ? note : `Not included in the zip — ${note}`;
 }
 
 // A missing status means the request never reached the endpoint, which is also worth a retry.
@@ -512,25 +514,27 @@ async function renderPassPng(pass: BoardingPass): Promise<Uint8Array<ArrayBuffer
 
 async function buildPassFiles(job: BulkJob): Promise<PassBuild> {
   const base = buildPassBaseName(job.pass);
+  const entries: ZipEntry[] = [];
 
-  // Fetch before drawing so a 13MB canvas is not held open across the network wait.
-  const pkpassBlob = await retry(
-    () => downloadPass(job.payload, API_DOWNLOAD_PASS_URL),
-    { attempts: BULK_ATTEMPTS, shouldRetry: isRetryable }
-  );
-
-  const entries: ZipEntry[] = [
-    { name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) },
-  ];
+  // A wallet pass is only a container for the barcode, so there is nothing to
+  // fetch here and the row's wallet buttons are disabled for the same reason.
+  if (hasBarcode(job.pass)) {
+    // Fetch before drawing so a 13MB canvas is not held open across the network wait.
+    const pkpassBlob = await retry(
+      () => downloadPass(job.payload, API_DOWNLOAD_PASS_URL),
+      { attempts: BULK_ATTEMPTS, shouldRetry: isRetryable }
+    );
+    entries.push({ name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) });
+  }
 
   // The pkpass is already in hand, so a failed image costs the image and nothing else.
   try {
     entries.push({ name: `${base}.png`, data: await renderPassPng(job.pass) });
   } catch (error) {
-    return { entries, problem: errorText(error) };
+    return { entries, problem: `Image skipped — ${errorText(error)}` };
   }
 
-  return { entries };
+  return hasBarcode(job.pass) ? { entries } : { entries, problem: NO_WALLET_PASS_NOTE };
 }
 
 function renderProblems(problems: PassProblem[]) {
@@ -548,7 +552,7 @@ function renderProblems(problems: PassProblem[]) {
 
     const why = document.createElement("span");
     why.className = "failure-why";
-    why.textContent = partial ? `Image skipped — ${note}` : note;
+    why.textContent = note;
 
     item.append(who, why);
     item.addEventListener("click", () => {
@@ -641,7 +645,7 @@ async function downloadAllPasses(jobs: BulkJob[]) {
       if (result.value.problem) {
         problems.push({ job, note: result.value.problem, partial: true });
         markPassRow(job.index, result.value.problem, true);
-        console.error(`Pass image failed (row ${job.index}): ${result.value.problem}`);
+        console.error(`Pass incomplete (row ${job.index}): ${result.value.problem}`);
       }
     });
 
@@ -722,12 +726,18 @@ function renderSearchBar(passes: BoardingPass[]) {
     emptyHint.style.display = query !== "" && visible.length === 0 ? "" : "none";
 
     // A running bulk download owns the button's label and disabled state.
-    const bulkBtn = document.getElementById("btn-download-all");
+    const bulkBtn = document.getElementById("btn-download-all") as HTMLButtonElement | null;
     if (bulkBtn && !bulkRunning) {
       bulkBtn.textContent = query === ""
         ? "Download All Passes"
         : `Download Results (${visible.length})`;
-      (bulkBtn as HTMLButtonElement).disabled = visible.length === 0;
+      bulkBtn.disabled = visible.length === 0;
+    }
+
+    const printBtn = document.getElementById("btn-print-all") as HTMLButtonElement | null;
+    if (printBtn) {
+      printBtn.textContent = query === "" ? "Print all" : `Print Results (${visible.length})`;
+      printBtn.disabled = visible.length === 0;
     }
 
     const isSingleMatch = query !== "" && visible.length === 1;
@@ -756,7 +766,14 @@ function renderSearchBar(passes: BoardingPass[]) {
 
 function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) {
   bulkActionsEl.innerHTML = "";
-  if (passes.length <= 1) return;
+  if (passes.length === 0) return;
+
+  // Printing is worth offering for a single pass; a zip of one is not.
+  if (passes.length <= 1) {
+    bulkActionsEl.appendChild(buildPrintAllButton(passes));
+    maybeAutoPrint(passes);
+    return;
+  }
 
   const btn = document.createElement("button");
   btn.id = "btn-download-all";
@@ -771,6 +788,8 @@ function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) 
     downloadAllPasses(jobs);
   });
   bulkActionsEl.appendChild(btn);
+  bulkActionsEl.appendChild(buildPrintAllButton(passes));
+  maybeAutoPrint(passes);
 }
 
 function buildPassTitle(pass: BoardingPass) {
@@ -807,8 +826,6 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
     header.appendChild(title);
     row.appendChild(header);
 
-    // The wallet endpoints may well still work for such a pass, so the buttons
-    // stay enabled and report their own errors; this only sets expectations.
     if (!hasBarcode(pass)) {
       row.classList.add("pass-no-barcode");
 
@@ -828,6 +845,12 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
       const button = document.createElement("button");
       button.textContent = action.label;
       button.dataset.action = action.id;
+      // A wallet pass is only a container for the barcode, so without one there
+      // is nothing usable to hand out. Show Ticket stays: the details are.
+      if (action.id !== "qr" && !hasBarcode(pass)) {
+        button.disabled = true;
+        button.title = "No barcode yet, so there is no wallet pass to download";
+      }
       button.addEventListener("click", async () => {
         // Toggle logic for "Show Ticket"
         if (action.id === "qr") {
@@ -1026,5 +1049,274 @@ async function fetchPasses() {
     }
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Full-tab view
+ * ------------------------------------------------------------------ */
+
+/** Runtime path of the popup document, as the build emits it (dist/<target>/src/popup/popup.html). */
+const POPUP_PAGE_PATH = "src/popup/popup.html";
+
+const TAB_VIEW_QUERY = "?view=tab";
+
+function isTabView(): boolean {
+  return new URLSearchParams(window.location.search).get("view") === "tab";
+}
+
+/** Tab-only styling hangs off this class, so it has to land before the first render. */
+function applyViewMode() {
+  if (isTabView()) document.body.classList.add("view-tab");
+}
+
+/** An extension page opened by its own extension needs no extra permission. */
+function renderOpenInTabControl() {
+  if (isTabView()) return;
+
+  const header = document.querySelector(".app-header");
+  if (!header) return;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "btn-open-tab";
+  button.className = "btn-open-tab";
+  button.title = "Open RyanQuack in a full browser tab";
+  button.textContent = "Open in tab ↗";
+
+  button.addEventListener("click", () => {
+    const url = browser.runtime.getURL(POPUP_PAGE_PATH) + TAB_VIEW_QUERY;
+    browser.tabs.create({ url }).catch((error) => {
+      setStatus(`Could not open a tab: ${errorText(error)}`);
+    });
+  });
+
+  header.appendChild(button);
+}
+
+/* ------------------------------------------------------------------ *
+ * Print sheet
+ * ------------------------------------------------------------------ */
+
+const PRINT_SHEET_ID = "print-sheet";
+
+/** Aztec modules stay crisp well past this; the card's CSS scales the canvas down. */
+const PRINT_AZTEC_SCALE = 3;
+
+/** Some browsers never fire `afterprint`, so the sheet is swept up on a timer too. */
+const PRINT_CLEANUP_MS = 60_000;
+/** Three 80mm rows of three cards fill an A4 page; each page carries its own margins. */
+const PRINT_CARDS_PER_PAGE = 9;
+
+function buildPrintField(label: string, value: string): HTMLElement {
+  const field = document.createElement("div");
+  field.className = "print-field";
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "print-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("span");
+  valueEl.className = "print-value";
+  valueEl.textContent = value;
+
+  field.append(labelEl, valueEl);
+  return field;
+}
+
+function renderPrintAztec(slot: HTMLElement, pass: BoardingPass) {
+  if (!pass.barcode) {
+    slot.classList.add("print-aztec-missing");
+    slot.textContent = "No barcode issued for this pass";
+    return;
+  }
+
+  try {
+    const canvas = document.createElement("canvas");
+    bwipjs.toCanvas(canvas, {
+      bcid: "azteccode",
+      text: pass.barcode,
+      scale: PRINT_AZTEC_SCALE,
+      backgroundcolor: "ffffff",
+      includetext: false
+    });
+    slot.appendChild(canvas);
+  } catch (error) {
+    // One unprintable barcode should not cost the user the rest of the sheet.
+    console.error("Print barcode failed", error);
+    slot.classList.add("print-aztec-missing");
+    slot.textContent = "Barcode could not be rendered";
+  }
+}
+
+function buildPrintCard(pass: BoardingPass): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "print-card";
+
+  const route = document.createElement("div");
+  route.className = "print-route";
+  route.textContent = `${pass.departure.code} ✈ ${pass.arrival.code}`;
+
+  const name = document.createElement("div");
+  name.className = "print-name";
+  name.textContent = `${pass.name.first} ${pass.name.last}`;
+
+  const grid = document.createElement("div");
+  grid.className = "print-grid";
+
+  const dateStr = new Date(pass.departure.date)
+    .toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const timeStr = new Date(pass.boardingTime)
+    .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+  grid.append(
+    buildPrintField("Flight", `${pass.flight.carrierCode} ${pass.flight.number}`),
+    buildPrintField("Date", dateStr),
+    buildPrintField("Boarding", timeStr),
+    buildPrintField("Seat", pass.seat?.designator ?? "—"),
+    buildPrintField("Seq", String(pass.sequence)),
+    buildPrintField("Ref", pass.pnr),
+  );
+
+  card.append(route, name, grid);
+
+  if (pass.priority) {
+    const priority = document.createElement("div");
+    priority.className = "print-priority";
+    priority.textContent = "PRIORITY BOARDING";
+    card.appendChild(priority);
+  }
+
+  const aztec = document.createElement("div");
+  aztec.className = "print-aztec";
+  renderPrintAztec(aztec, pass);
+  card.appendChild(aztec);
+
+  return card;
+}
+
+/** The passes the user can currently see — the same visibility rule the bulk button uses. */
+function visiblePasses(passes: BoardingPass[]): BoardingPass[] {
+  return Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
+    .filter((row) => row.style.display !== "none")
+    .map((row) => Number(row.dataset.index))
+    .filter((index) => !Number.isNaN(index) && passes[index] !== undefined)
+    .map((index) => passes[index]);
+}
+
+/** Builds an off-screen sheet of cards, prints it, and takes it back down after. */
+function printPasses(passes: BoardingPass[]) {
+  // A sheet stranded by a missed `afterprint` would otherwise print twice.
+  document.getElementById(PRINT_SHEET_ID)?.remove();
+
+  const sheet = document.createElement("div");
+  sheet.id = PRINT_SHEET_ID;
+  // Explicit pages, so every page (not just the first) gets the same padding.
+  for (let start = 0; start < passes.length; start += PRINT_CARDS_PER_PAGE) {
+    const page = document.createElement("div");
+    page.className = "print-page";
+    passes.slice(start, start + PRINT_CARDS_PER_PAGE)
+      .forEach((pass) => page.appendChild(buildPrintCard(pass)));
+    sheet.appendChild(page);
+  }
+  document.body.appendChild(sheet);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cleaned = false;
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    clearTimeout(timer);
+    window.removeEventListener("afterprint", cleanup);
+    sheet.remove();
+  };
+
+  window.addEventListener("afterprint", cleanup);
+  timer = setTimeout(cleanup, PRINT_CLEANUP_MS);
+
+  window.print();
+}
+
+function printVisiblePasses(passes: BoardingPass[]) {
+  const selected = visiblePasses(passes);
+  if (selected.length === 0) {
+    setStatus("Nothing to print 🦆");
+    return;
+  }
+
+  setStatus(`Printing ${selected.length} ${selected.length === 1 ? "pass" : "passes"}...`);
+  printPasses(selected);
+}
+
+function currentSearchQuery(): string {
+  return searchBarEl.querySelector<HTMLInputElement>("input")?.value.trim() ?? "";
+}
+
+/**
+ * Hands the print job to the tab view, carrying the search filter across.
+ * Chrome tears the action popup down as soon as the print dialog takes focus,
+ * which would leave the user with a dialog and no document behind it.
+ */
+function openPrintTab() {
+  const query = currentSearchQuery();
+  const url = browser.runtime.getURL(POPUP_PAGE_PATH)
+    + "?view=tab&print=1"
+    + (query ? `&q=${encodeURIComponent(query)}` : "");
+
+  browser.tabs.create({ url }).catch((error) => {
+    setStatus(`Could not open a tab: ${errorText(error)}`);
+  });
+}
+
+/** `print=1` is honoured once per page load; a later re-render must not reprint. */
+let autoPrintPending = isTabView()
+  && new URLSearchParams(window.location.search).get("print") === "1";
+
+/**
+ * Replays a "Print all" click that started in the popup. Deferred by a tick so
+ * it lands after `renderSearchBar` has run in the same render pass, and the
+ * filter can be restored before the visible rows are read.
+ */
+function maybeAutoPrint(passes: BoardingPass[]) {
+  if (!autoPrintPending) return;
+  autoPrintPending = false;
+
+  setTimeout(() => {
+    const query = new URLSearchParams(window.location.search).get("q");
+    const input = searchBarEl.querySelector<HTMLInputElement>("input");
+
+    if (query && input) {
+      input.value = query;
+      // The search handler owns row visibility, so let it do the filtering.
+      input.dispatchEvent(new Event("input"));
+    }
+
+    printVisiblePasses(passes);
+  }, 0);
+}
+
+function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "btn-print-all";
+  button.className = "btn-print-all";
+  button.textContent = "Print all";
+  button.title = isTabView()
+    ? "Lay every visible pass out as a wallet-size card and open the print dialog"
+    : "Open the full-tab view and print every visible pass as a wallet-size card";
+
+  button.addEventListener("click", () => {
+    if (!isTabView()) {
+      openPrintTab();
+      return;
+    }
+
+    printVisiblePasses(passes);
+  });
+
+  return button;
+}
+
+applyViewMode();
+renderOpenInTabControl();
 
 fetchPasses();

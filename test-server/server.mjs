@@ -7,6 +7,9 @@ const DATA_DIR = new URL("data", import.meta.url).pathname;
 
 let currentScenario = "MIXED";
 let passesCount = 1;
+// "recordLocator|sequenceNumber" of every pass handed out without a barcode, so
+// /v1/downloadpass can answer the way a real backend plausibly would.
+const barcodelessPasses = new Set();
 let upcomingCount = 1;
 
 function generateOrders(pCount, uCount) {
@@ -266,6 +269,10 @@ const server = createServer(async (req, res) => {
             };
          });
 
+         passes.forEach((p) => {
+           if (!p.barcode) barcodelessPasses.add(`${p.pnr}|${p.sequence}`);
+         });
+
          res.setHeader("Content-Type", "application/json");
          res.writeHead(200);
          res.end(JSON.stringify(passes));
@@ -306,9 +313,28 @@ const server = createServer(async (req, res) => {
     if (req.headers["client"] !== "ios") {
       res.writeHead(403); res.end(); return;
     }
-    res.setHeader("Content-Type", "application/vnd.apple.pkpass");
-    res.writeHead(200);
-    res.end("DUMMY_PKPASS_DATA");
+
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      // A pass with no barcode has no wallet file behind it. 422 is the guess at
+      // what Ryanair answers here; the extension should not be asking at all.
+      try {
+        const payload = JSON.parse(body);
+        if (barcodelessPasses.has(`${payload.recordLocator}|${payload.sequenceNumber}`)) {
+          console.log(`  -> 422: no barcode for ${payload.recordLocator}/${payload.sequenceNumber}`);
+          res.writeHead(422);
+          res.end();
+          return;
+        }
+      } catch (e) {
+        // Fall through to the normal response.
+      }
+
+      res.setHeader("Content-Type", "application/vnd.apple.pkpass");
+      res.writeHead(200);
+      res.end("DUMMY_PKPASS_DATA");
+    });
     return;
   }
 

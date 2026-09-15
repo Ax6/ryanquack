@@ -323,8 +323,7 @@ button:disabled {
   border-radius: 4px;
 }
 
-/* A pass Ryanair has not issued a barcode for yet: a state, not a failure,
-   so it borrows the amber of .pass-partial rather than the red of .pass-failed. */
+/* A state, not a failure: amber like .pass-partial, not the red of .pass-failed. */
 .pass-no-barcode {
   border-color: #b9770e;
   box-shadow: 3px 3px 0px rgba(185, 119, 14, 0.15);
@@ -349,4 +348,250 @@ button:disabled {
   line-height: 1.4;
   color: #666;
   text-align: center;
+}
+
+/* ------------------------------------------------------------------ *
+ * "Open in tab" header control
+ * ------------------------------------------------------------------ */
+
+.app-header {
+  position: relative;
+}
+
+.btn-open-tab {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: #f6c453;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.btn-open-tab:hover {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------ *
+ * Bulk action row (Download All + Print all sit side by side)
+ * ------------------------------------------------------------------ */
+
+#bulk-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#bulk-actions button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.btn-print-all {
+  background: #ffffff;
+  color: #073590;
+  border-color: #073590;
+}
+
+/* ------------------------------------------------------------------ *
+ * Full-tab view (?view=tab) — popup rendering is untouched by these
+ * ------------------------------------------------------------------ */
+
+body.view-tab {
+  /* Rows: header, bulk actions, search, passes, status bar. The passes row
+     takes the slack so the sticky status bar sits at the foot of the window. */
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Full-window bands: the gutter moves to their padding so their contents still
+   line up with the centred column below. */
+body.view-tab .app-header,
+body.view-tab #status-bar {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: max(12px, calc((100% - 720px) / 2));
+  padding-right: max(12px, calc((100% - 720px) / 2));
+}
+
+/* Must stay in step with the gutter above. */
+body.view-tab #bulk-actions,
+body.view-tab #search-bar,
+body.view-tab #passes {
+  width: calc(100% - 24px);
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Two columns once there is a second pass to sit beside the first. */
+body.view-tab #passes:has(> .pass ~ .pass) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+/* The body grid hands this row the leftover height; don't spread into it. */
+body.view-tab #passes {
+  align-content: start;
+}
+
+/* ------------------------------------------------------------------ *
+ * Print sheet — off-screen until the print dialog asks for it
+ * ------------------------------------------------------------------ */
+
+#print-sheet {
+  display: none;
+}
+
+@media print {
+  /* Zero page margin also stops Chrome printing its date/URL header and footer;
+     the sheet carries the 10mm margin as padding instead. */
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+    background: #ffffff;
+    color: #000000;
+  }
+
+  /* The tab view's centring gutters would otherwise narrow the sheet on paper. */
+  body.view-tab {
+    display: block;
+    min-height: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  body > *:not(#print-sheet) {
+    display: none !important;
+  }
+
+  #print-sheet {
+    display: block !important;
+  }
+
+  /* Padding, not margin: a margin on the sheet would only pad the first page.
+     Three columns across 190mm gives 59mm cards, close to wallet width. */
+  .print-page {
+    display: grid;
+    box-sizing: border-box;
+    padding: 10mm;
+    grid-template-columns: repeat(3, 1fr);
+    justify-content: start;
+    align-content: start;
+    gap: 6mm;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .print-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .print-card {
+    box-sizing: border-box;
+    width: 100%;
+    height: 80mm; /* content runs ~70mm; three rows plus gaps fit one A4 page */
+    padding: 4mm;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5mm;
+    border: 1px dashed #000000;
+    border-radius: 0;
+    background: #ffffff;
+    color: #000000;
+    box-shadow: none;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    overflow: hidden;
+  }
+
+  .print-route {
+    font-size: 13pt;
+    font-weight: 800;
+    text-align: center;
+    letter-spacing: 0.02em;
+  }
+
+  .print-name {
+    font-size: 9pt;
+    font-weight: 700;
+    text-align: center;
+    padding-bottom: 1.5mm;
+    border-bottom: 1px solid #000000;
+    overflow-wrap: anywhere;
+  }
+
+  .print-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1mm 2mm;
+  }
+
+  .print-field {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .print-label {
+    font-size: 5.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .print-value {
+    font-size: 8.5pt;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+
+  .print-priority {
+    font-size: 7pt;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: 0.06em;
+    border: 1px solid #000000;
+    padding: 0.5mm 0;
+  }
+
+  .print-aztec {
+    margin-top: auto;
+    margin-bottom: auto;
+    display: grid;
+    place-items: center;
+  }
+
+  /* Comfortably above the 25mm a scanner wants. */
+  .print-aztec canvas {
+    width: 28mm;
+    height: 28mm;
+    image-rendering: pixelated;
+  }
+
+  .print-aztec-missing {
+    font-size: 7pt;
+    font-style: italic;
+    text-align: center;
+    min-height: 28mm;
+    align-content: center;
+  }
 }
