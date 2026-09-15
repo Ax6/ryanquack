@@ -721,12 +721,18 @@ function renderSearchBar(passes: BoardingPass[]) {
     emptyHint.style.display = query !== "" && visible.length === 0 ? "" : "none";
 
     // A running bulk download owns the button's label and disabled state.
-    const bulkBtn = document.getElementById("btn-download-all");
+    const bulkBtn = document.getElementById("btn-download-all") as HTMLButtonElement | null;
     if (bulkBtn && !bulkRunning) {
       bulkBtn.textContent = query === ""
         ? "Download All Passes"
         : `Download Results (${visible.length})`;
-      (bulkBtn as HTMLButtonElement).disabled = visible.length === 0;
+      bulkBtn.disabled = visible.length === 0;
+    }
+
+    const printBtn = document.getElementById("btn-print-all") as HTMLButtonElement | null;
+    if (printBtn) {
+      printBtn.textContent = query === "" ? "Print all" : `Print Results (${visible.length})`;
+      printBtn.disabled = visible.length === 0;
     }
 
     const isSingleMatch = query !== "" && visible.length === 1;
