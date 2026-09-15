@@ -171,21 +171,25 @@ async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement
     value: string,
     x: number,
     y: number,
-    align: CanvasTextAlign = "left"
+    align: CanvasTextAlign = "left",
+    // Condenses rather than overruns: long passenger names would otherwise
+    // collide with the field opposite them.
+    maxWidth?: number
   ) => {
     ctx.textAlign = align;
 
     ctx.font = "normal 14px sans-serif";
     ctx.fillStyle = "#666666";
-    ctx.fillText(label.toUpperCase(), x, y);
+    ctx.fillText(label.toUpperCase(), x, y, maxWidth);
 
     ctx.font = "bold 20px sans-serif";
     ctx.fillStyle = "#000000";
-    ctx.fillText(value, x, y + 25);
+    ctx.fillText(value, x, y + 25, maxWidth);
   };
 
   // Row 1: Passenger / Booking ref
-  drawField("Passenger", `${pass.name.first} ${pass.name.last}`, 40, 110, "left");
+  // 323px is the gap to the booking reference opposite.
+  drawField("Passenger", `${pass.name.first} ${pass.name.last}`, 40, 110, "left", 315);
   drawField("Booking ref", pass.pnr, width - 40, 110, "right");
 
   // Row 2: Flight / Date
