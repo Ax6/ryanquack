@@ -77,8 +77,8 @@ const QUACKS = [
 
 const READY_QUACK = "Ready to quack...";
 
-// Shown wherever a pass would otherwise show its Aztec code. The API never says
-// why the barcode is missing, so the copy names the usual cause and stops there.
+// The API never says why the barcode is missing, so the copy names the usual
+// cause and stops short of asserting it.
 const NO_BARCODE_NOTICE =
   "No barcode yet. Ryanair hasn't issued a scannable code for this pass, usually because " +
   "travel documents still need to be checked. Check the booking on ryanair.com.";
@@ -361,8 +361,7 @@ function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
   const canvasContainer = container.querySelector(".aztec-canvas") as HTMLElement;
   const barcode = hasBarcode(pass) ? String(pass.barcode) : null;
 
-  // The details above are the point of the ticket view, so a pass with no
-  // barcode keeps them and explains the empty square instead of throwing.
+  // The details are the point of this view, so keep them and explain the gap.
   if (barcode === null) {
     const notice = document.createElement("div");
     notice.className = "aztec-missing";
@@ -816,7 +815,6 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
     header.appendChild(title);
     row.appendChild(header);
 
-    // The wallet buttons above are disabled for this state; the notice says why.
     if (!hasBarcode(pass)) {
       row.classList.add("pass-no-barcode");
 
@@ -836,9 +834,8 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
       const button = document.createElement("button");
       button.textContent = action.label;
       button.dataset.action = action.id;
-      // A wallet pass is a container for the barcode, so without one there is
-      // nothing usable to hand out. Show Ticket stays: the details and the
-      // notice are what the user needs to see for a pass in this state.
+      // A wallet pass is only a container for the barcode, so without one there
+      // is nothing usable to hand out. Show Ticket stays: the details are.
       if (action.id !== "qr" && !hasBarcode(pass)) {
         button.disabled = true;
         button.title = "No barcode yet, so there is no wallet pass to download";
@@ -1049,7 +1046,6 @@ async function fetchPasses() {
 /** Runtime path of the popup document, as the build emits it (dist/<target>/src/popup/popup.html). */
 const POPUP_PAGE_PATH = "src/popup/popup.html";
 
-/** Marks the document as the standalone tab rendering rather than the action popup. */
 const TAB_VIEW_QUERY = "?view=tab";
 
 function isTabView(): boolean {
@@ -1061,12 +1057,8 @@ function applyViewMode() {
   if (isTabView()) document.body.classList.add("view-tab");
 }
 
-/**
- * Adds the header link that reopens this same document as a full browser tab.
- * An extension page opened by its own extension needs no extra permission.
- */
+/** An extension page opened by its own extension needs no extra permission. */
 function renderOpenInTabControl() {
-  // The tab already is the roomy view; offering it again would just spawn duplicates.
   if (isTabView()) return;
 
   const header = document.querySelector(".app-header");
@@ -1119,7 +1111,6 @@ function buildPrintField(label: string, value: string): HTMLElement {
   return field;
 }
 
-/** Draws the pass barcode into the card, or says so plainly when there is none. */
 function renderPrintAztec(slot: HTMLElement, pass: BoardingPass) {
   if (!pass.barcode) {
     slot.classList.add("print-aztec-missing");
@@ -1200,10 +1191,7 @@ function visiblePasses(passes: BoardingPass[]): BoardingPass[] {
     .map((index) => passes[index]);
 }
 
-/**
- * Builds an off-screen sheet of wallet-size cards, hands it to the browser's own
- * print dialog, and takes it back down once the dialog is gone.
- */
+/** Builds an off-screen sheet of cards, prints it, and takes it back down after. */
 function printPasses(passes: BoardingPass[]) {
   // A sheet stranded by a missed `afterprint` would otherwise print twice.
   document.getElementById(PRINT_SHEET_ID)?.remove();
@@ -1237,7 +1225,6 @@ function printPasses(passes: BoardingPass[]) {
   window.print();
 }
 
-/** Lays out and prints whatever the search filter currently leaves on screen. */
 function printVisiblePasses(passes: BoardingPass[]) {
   const selected = visiblePasses(passes);
   if (selected.length === 0) {
@@ -1249,7 +1236,6 @@ function printVisiblePasses(passes: BoardingPass[]) {
   printPasses(selected);
 }
 
-/** The query in the search box, or "" when the list is too short to have one. */
 function currentSearchQuery(): string {
   return searchBarEl.querySelector<HTMLInputElement>("input")?.value.trim() ?? "";
 }
@@ -1297,7 +1283,6 @@ function maybeAutoPrint(passes: BoardingPass[]) {
   }, 0);
 }
 
-/** The bulk "Print all" control; prints whatever the search filter currently leaves visible. */
 function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -1309,7 +1294,6 @@ function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
     : "Open the full-tab view and print every visible pass as a wallet-size card";
 
   button.addEventListener("click", () => {
-    // The popup cannot survive its own print dialog, so it delegates to a tab.
     if (!isTabView()) {
       openPrintTab();
       return;
