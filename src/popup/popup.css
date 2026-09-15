@@ -414,8 +414,31 @@ body.view-tab {
   grid-template-rows: auto auto auto 1fr auto;
   min-height: 100vh;
   box-sizing: border-box;
+  /* No side padding here: the header and footer bands run edge to edge, and the
+     rows between them carry their own centred width (below). */
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* The header and status bar are full-window bands, so the gutter becomes their
+   padding and their contents still line up with the centred column. */
+body.view-tab .app-header,
+body.view-tab #status-bar {
+  margin-left: 0;
+  margin-right: 0;
   padding-left: max(12px, calc((100% - 720px) / 2));
   padding-right: max(12px, calc((100% - 720px) / 2));
+}
+
+/* Matches the gutter above: 720px centred, falling back to a 12px inset when
+   the window is narrower than that. */
+body.view-tab #bulk-actions,
+body.view-tab #search-bar,
+body.view-tab #passes {
+  width: calc(100% - 24px);
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* Two columns once there is a second pass to sit beside the first. */
