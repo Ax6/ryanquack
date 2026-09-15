@@ -12,7 +12,7 @@ import browser from "webextension-polyfill";
 import { downloadPass, fetchGoogleWalletToken } from "../lib/api";
 import { mapWithConcurrency, retry } from "../lib/concurrency";
 import { errorStatus, errorText } from "../lib/errors";
-import { buildPassBaseName, buildPassFilename } from "../lib/ryanair";
+import { buildPassBaseName, buildPassFilename, hasBarcode } from "../lib/ryanair";
 import type { BoardingPass, DownloadPayload, FlightSummary } from "../lib/ryanair";
 import type { CachedPasses, PassesResult, RyqMessage } from "../lib/messages";
 import { buildZip } from "../lib/zip";
@@ -77,8 +77,55 @@ const QUACKS = [
 
 const READY_QUACK = "Ready to quack...";
 
+// Shown wherever a pass would otherwise show its Aztec code. The API never says
+// why the barcode is missing, so the copy names the usual cause and stops there.
+const NO_BARCODE_NOTICE =
+  "No barcode yet. Ryanair hasn't issued a scannable code for this pass, usually because " +
+  "travel documents still need to be checked. Check the booking on ryanair.com.";
+
 function getRandomQuack() {
   return QUACKS[Math.floor(Math.random() * QUACKS.length)];
+}
+
+/** Greedily breaks `text` into lines that fit `maxWidth` under the context's current font. */
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const candidate = line === "" ? word : `${line} ${word}`;
+    // An over-long single word still gets its own line rather than being dropped.
+    if (line !== "" && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+
+  if (line !== "") lines.push(line);
+  return lines;
+}
+
+/** Fills the square the Aztec would have occupied with the missing-barcode notice. */
+function drawNoBarcodeNotice(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number
+) {
+  // Plain rect: roundRect needs Firefox 112+, and the manifest allows 109.
+  ctx.fillStyle = "#f2f2f2";
+  ctx.fillRect(x, y, size, size);
+
+  ctx.font = "normal 16px sans-serif";
+  ctx.fillStyle = "#2b2b2b";
+  ctx.textAlign = "center";
+
+  const lineHeight = 22;
+  const lines = wrapText(ctx, NO_BARCODE_NOTICE, size - 40);
+  const firstBaseline = y + size / 2 - ((lines.length - 1) * lineHeight) / 2;
+  lines.forEach((line, i) => ctx.fillText(line, x + size / 2, firstBaseline + i * lineHeight));
 }
 
 async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement> {
@@ -137,8 +184,9 @@ async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement
     ctx.fillText(value, x, y + 25);
   };
 
-  // Row 1: Passenger
+  // Row 1: Passenger / Booking ref
   drawField("Passenger", `${pass.name.first} ${pass.name.last}`, 40, 110, "left");
+  drawField("Booking ref", pass.pnr, width - 40, 110, "right");
 
   // Row 2: Flight / Date
   drawField("Flight", `${pass.flight.carrierCode} ${pass.flight.number}`, 40, 180, "left");
@@ -161,24 +209,27 @@ async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement
     ctx.fillText("PRIORITY BOARDING ⚡", width / 2, 320);
   }
 
-  // An image without a scannable barcode is not a boarding pass, so let this throw.
-  if (!pass.barcode) throw new Error("No barcode on this pass");
-
-  // bwip-js renders to its own canvas, which we then draw into this one.
-  const aztecCanvas = document.createElement("canvas");
-  bwipjs.toCanvas(aztecCanvas, {
-    bcid: "azteccode",
-    text: pass.barcode,
-    scale: 4, // Higher scale for the large image
-    backgroundcolor: "ffffff",
-    includetext: false
-  });
-
   // Center the Aztec code
   const aztecSize = 300;
   const x = (width - aztecSize) / 2;
   const y = 350;
-  ctx.drawImage(aztecCanvas, x, y, aztecSize, aztecSize);
+  const barcode = hasBarcode(pass) ? String(pass.barcode) : null;
+
+  if (barcode === null) {
+    // Still worth exporting: everything but the scannable code is on the image.
+    drawNoBarcodeNotice(ctx, x, y, aztecSize);
+  } else {
+    // bwip-js renders to its own canvas, which we then draw into this one.
+    const aztecCanvas = document.createElement("canvas");
+    bwipjs.toCanvas(aztecCanvas, {
+      bcid: "azteccode",
+      text: barcode,
+      scale: 4, // Higher scale for the large image
+      backgroundcolor: "ffffff",
+      includetext: false
+    });
+    ctx.drawImage(aztecCanvas, x, y, aztecSize, aztecSize);
+  }
 
   // RyanQuack Branding
   ctx.font = "italic 14px sans-serif";
@@ -240,6 +291,13 @@ function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
         </div>
       </div>
 
+      <div class="ticket-section">
+        <div>
+          <div class="ticket-label">Booking ref</div>
+          <div class="ticket-value">${pass.pnr}</div>
+        </div>
+      </div>
+
       <div style="text-align: center; margin-top: 8px;">
         <span class="ticket-label">Priority: </span>
         <span class="ticket-value">${pass.priority ? "YES ⚡" : "No"}</span>
@@ -292,7 +350,7 @@ function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
       }, "image/png");
     } catch (err) {
       console.error(err);
-      // The bulk path names the reason (e.g. a missing barcode), so this one should too.
+      // The bulk path names the reason a render failed, so this one should too.
       setStatus(`Export failed 🦆 ${errorText(err)}`);
     }
   };
@@ -301,15 +359,22 @@ function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
   btnSave.addEventListener("click", () => handleExport("save"));
 
   const canvasContainer = container.querySelector(".aztec-canvas") as HTMLElement;
+  const barcode = hasBarcode(pass) ? String(pass.barcode) : null;
+
+  // The details above are the point of the ticket view, so a pass with no
+  // barcode keeps them and explains the empty square instead of throwing.
+  if (barcode === null) {
+    const notice = document.createElement("div");
+    notice.className = "aztec-missing";
+    notice.textContent = NO_BARCODE_NOTICE;
+    canvasContainer.appendChild(notice);
+    return;
+  }
+
   const canvas = document.createElement("canvas");
-
-  // Same guard as the image export: without a barcode there is nothing to draw,
-  // and bwip-js would otherwise throw its own unreadable error.
-  if (!pass.barcode) throw new Error("No barcode on this pass");
-
   bwipjs.toCanvas(canvas, {
     bcid: "azteccode",
-    text: pass.barcode,
+    text: barcode,
     scale: 3,
     backgroundcolor: "ffffff",
     includetext: false
@@ -749,6 +814,18 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
     title.textContent = buildPassTitle(pass);
 
     header.appendChild(title);
+    row.appendChild(header);
+
+    // The wallet endpoints may well still work for such a pass, so the buttons
+    // stay enabled and report their own errors; this only sets expectations.
+    if (!hasBarcode(pass)) {
+      row.classList.add("pass-no-barcode");
+
+      const notice = document.createElement("div");
+      notice.className = "pass-notice";
+      notice.textContent = NO_BARCODE_NOTICE;
+      row.appendChild(notice);
+    }
 
     const actions = document.createElement("div");
     actions.className = "pass-actions";
@@ -795,7 +872,6 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
       actions.appendChild(button);
     });
 
-    row.appendChild(header);
     row.appendChild(actions);
     row.appendChild(outputBox);
     passesEl.appendChild(row);
