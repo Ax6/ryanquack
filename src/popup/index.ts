@@ -816,8 +816,7 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
     header.appendChild(title);
     row.appendChild(header);
 
-    // The wallet endpoints may well still work for such a pass, so the buttons
-    // stay enabled and report their own errors; this only sets expectations.
+    // The wallet buttons above are disabled for this state; the notice says why.
     if (!hasBarcode(pass)) {
       row.classList.add("pass-no-barcode");
 
@@ -837,6 +836,13 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
       const button = document.createElement("button");
       button.textContent = action.label;
       button.dataset.action = action.id;
+      // A wallet pass is a container for the barcode, so without one there is
+      // nothing usable to hand out. Show Ticket stays: the details and the
+      // notice are what the user needs to see for a pass in this state.
+      if (action.id !== "qr" && !hasBarcode(pass)) {
+        button.disabled = true;
+        button.title = "No barcode yet, so there is no wallet pass to download";
+      }
       button.addEventListener("click", async () => {
         // Toggle logic for "Show Ticket"
         if (action.id === "qr") {
