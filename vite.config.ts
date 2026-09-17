@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, configDefaults } from "vitest/config";
 import { crx } from "@crxjs/vite-plugin";
 import manifestChrome from "./src/manifests/manifest.chrome.json";
 import manifestFirefox from "./src/manifests/manifest.firefox.json";
@@ -21,6 +21,11 @@ export default defineConfig({
   build: {
     outDir,
     emptyOutDir: true,
+  },
+  test: {
+    // Worktrees checked out inside the repo carry their own copy of the suite,
+    // which vitest would otherwise collect alongside the real one.
+    exclude: [...configDefaults.exclude, "**/.claude/**"],
   },
   server: {
     port: 5173,
