@@ -518,23 +518,32 @@ async function buildPassFiles(job: BulkJob): Promise<PassBuild> {
 
   // A wallet pass is only a container for the barcode, so there is nothing to
   // fetch here and the row's wallet buttons are disabled for the same reason.
+  let problem = hasBarcode(job.pass) ? null : NO_WALLET_PASS_NOTE;
+
   if (hasBarcode(job.pass)) {
     // Fetch before drawing so a 13MB canvas is not held open across the network wait.
-    const pkpassBlob = await retry(
-      () => downloadPass(job.payload, API_DOWNLOAD_PASS_URL),
-      { attempts: BULK_ATTEMPTS, shouldRetry: isRetryable }
-    );
-    entries.push({ name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) });
+    // Contained the same way the image is below: the printable PNG is what the
+    // user actually needs at the gate, so a dead wallet pass must not cost it.
+    try {
+      const pkpassBlob = await retry(
+        () => downloadPass(job.payload, API_DOWNLOAD_PASS_URL),
+        { attempts: BULK_ATTEMPTS, shouldRetry: isRetryable }
+      );
+      entries.push({ name: `${base}.pkpass`, data: new Uint8Array(await pkpassBlob.arrayBuffer()) });
+    } catch (error) {
+      problem = `Wallet pass skipped — ${errorText(error)}`;
+    }
   }
 
-  // The pkpass is already in hand, so a failed image costs the image and nothing else.
+  // A failed image costs the image and nothing else.
   try {
     entries.push({ name: `${base}.png`, data: await renderPassPng(job.pass) });
   } catch (error) {
-    return { entries, problem: `Image skipped — ${errorText(error)}` };
+    const imageProblem = `Image skipped — ${errorText(error)}`;
+    return { entries, problem: problem ? `${problem}; ${imageProblem}` : imageProblem };
   }
 
-  return hasBarcode(job.pass) ? { entries } : { entries, problem: NO_WALLET_PASS_NOTE };
+  return problem ? { entries, problem } : { entries };
 }
 
 function renderProblems(problems: PassProblem[]) {

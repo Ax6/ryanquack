@@ -24,6 +24,29 @@ function httpError(message: string, status: number): Error & { status: number } 
   return Object.assign(new Error(message), { status });
 }
 
+/**
+ * Ryanair occasionally accepts a connection and then never answers. The popup
+ * used to hide that behind a spinner the user clicked away; the tab view stays
+ * open, so without a deadline it sits on its loading state forever.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** Fetches with a deadline. A timeout is reported as 408, which callers already retry. */
+async function fetchWithTimeout(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit
+): Promise<Response> {
+  try {
+    return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  } catch (error) {
+    if ((error as { name?: unknown } | null)?.name === "TimeoutError") {
+      throw httpError("Ryanair took too long to answer", 408);
+    }
+    throw error;
+  }
+}
+
 export async function fetchOrders(
   customerId: string,
   xAuthToken: string,
@@ -35,7 +58,8 @@ export async function fetchOrders(
     "x-auth-token": xAuthToken,
   };
 
-  const response = await fetchImpl(
+  const response = await fetchWithTimeout(
+    fetchImpl,
     `${baseUrl}/orders/v2/orders/${customerId}/details?type=flight&active=true`,
     {
       method: "GET",
@@ -66,7 +90,7 @@ export async function fetchBoardingPass(
     "x-auth-token": payload ? payload.xAuthToken : null,
   } as Record<string, string>;
 
-  const response = await fetchImpl(`${baseUrl}/v1/boardingpasses`, {
+  const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/v1/boardingpasses`, {
     method: "POST",
     headers,
     credentials: "include",
@@ -92,7 +116,7 @@ export async function downloadPass(
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<Blob> {
-  const response = await fetchImpl(`${baseUrl}/v1/downloadpass`, {
+  const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/v1/downloadpass`, {
     method: "POST",
     headers: DOWNLOADPASS_HEADERS,
     credentials: "include",
@@ -111,7 +135,7 @@ export async function fetchGoogleWalletToken(
   baseUrl: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<string> {
-  const response = await fetchImpl(`${baseUrl}/v1/boardingpass`, {
+  const response = await fetchWithTimeout(fetchImpl, `${baseUrl}/v1/boardingpass`, {
     method: "PUT",
     headers: GOOGLE_WALLET_HEADERS,
     credentials: "include",

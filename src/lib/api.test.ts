@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchBoardingPass, fetchGoogleWalletToken, BOARDINGPASSES_HEADERS, GOOGLE_WALLET_HEADERS } from "./api";
+import { fetchBoardingPass, fetchGoogleWalletToken, downloadPass, fetchOrders, BOARDINGPASSES_HEADERS, GOOGLE_WALLET_HEADERS } from "./api";
 import type { DownloadPayload } from "./ryanair";
 
 const WALLET_PAYLOAD: DownloadPayload = {
@@ -100,6 +100,7 @@ describe("API Logic", () => {
         headers: GOOGLE_WALLET_HEADERS,
         credentials: "include",
         body: JSON.stringify(payload),
+        signal: expect.any(AbortSignal),
       }
     );
     expect(GOOGLE_WALLET_HEADERS).toMatchObject({ "client": "android" });
@@ -141,5 +142,37 @@ describe("API Logic", () => {
     await expect(
       fetchGoogleWalletToken(WALLET_PAYLOAD, MOCK_URL, mockFetch as any)
     ).rejects.toThrow("google wallet boardingpass returned no token");
+  });
+});
+
+describe("Request deadlines", () => {
+  const MOCK_URL = "http://mock-api";
+
+  // What AbortSignal.timeout makes fetch reject with once the deadline passes.
+  const timeoutFetch = vi.fn().mockRejectedValue(
+    Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })
+  ) as unknown as typeof fetch;
+
+  it.each([
+    ["fetchOrders", () => fetchOrders("123", "token", MOCK_URL, timeoutFetch)],
+    ["fetchBoardingPass", () => fetchBoardingPass({ customerId: "123", bookingIds: [1], xAuthToken: "t" }, MOCK_URL, timeoutFetch)],
+    ["downloadPass", () => downloadPass(WALLET_PAYLOAD, MOCK_URL, timeoutFetch)],
+    ["fetchGoogleWalletToken", () => fetchGoogleWalletToken(WALLET_PAYLOAD, MOCK_URL, timeoutFetch)],
+  ])("should report a stalled %s as a retryable 408", async (_name, call) => {
+    await expect(call()).rejects.toMatchObject({
+      message: "Ryanair took too long to answer",
+      status: 408,
+    });
+  });
+
+  it("should attach an abort signal to every request", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => [] });
+
+    await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 });
