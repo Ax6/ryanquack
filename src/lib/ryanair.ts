@@ -95,10 +95,41 @@ export interface FlightSummary {
   checkInCloseUTC?: string;
 }
 
+/** Ascending. Subtraction would give NaN for two undated entries, so compare instead. */
+function compareTimes(left: number, right: number): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+/** A missing or unparseable time sorts last. */
+function toTime(value: string | undefined): number {
+  const epoch = Date.parse(value ?? "");
+  return Number.isNaN(epoch) ? Number.POSITIVE_INFINITY : epoch;
+}
+
+/** Ryanair gives the pass a millisecond epoch; the ISO string is the fallback. */
+function passDepartureTime(pass: BoardingPass): number {
+  return pass.departure?.epoch || toTime(pass.departure?.dateUTC);
+}
+
+/**
+ * Soonest first. The server is asked for this order too, but it pages the list
+ * and we merge the pages, so the client sorts as well rather than trusting it.
+ * Sorts a copy: callers pass arrays they did not expect to be rearranged.
+ */
+export function sortFlightsByDeparture(flights: FlightSummary[]): FlightSummary[] {
+  return [...flights].sort((a, b) => compareTimes(toTime(a.date), toTime(b.date)));
+}
+
+/** Soonest first, so the list of passes reads in the order they will be used. */
+export function sortPassesByDeparture(passes: BoardingPass[]): BoardingPass[] {
+  return [...passes].sort((a, b) => compareTimes(passDepartureTime(a), passDepartureTime(b)));
+}
+
 export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[] {
   if (!orders || !orders.items) return [];
 
-  return orders.items.flatMap((item) => {
+  const flights = orders.items.flatMap((item) => {
     const raw = item.rawBooking;
     if (!raw || !raw.flights) return [];
 
@@ -120,6 +151,8 @@ export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[]
       };
     });
   });
+
+  return sortFlightsByDeparture(flights);
 }
 
 export function filterReadyBookings(flights: FlightSummary[]): number[] {
@@ -184,6 +217,8 @@ export interface OrderItem {
 
 export interface OrderResponse {
   items: OrderItem[];
+  /** Cursor for the next page; absent on the last one. Merged results carry none. */
+  nextToken?: string | null;
 }
 
 function normalizeNamePart(value: unknown): string {

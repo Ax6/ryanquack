@@ -8,7 +8,7 @@
  * (at your option) any later version.
  */
 import browser from "webextension-polyfill";
-import { buildDownloadPayload, decodeCustomerId, extractFlightsFromOrders, filterReadyBookings } from "../lib/ryanair";
+import { buildDownloadPayload, decodeCustomerId, extractFlightsFromOrders, filterReadyBookings, sortPassesByDeparture } from "../lib/ryanair";
 import type { BoardingPass, DownloadPayload } from "../lib/ryanair";
 import type { CachedPasses, PassesResult, Tokens } from "../lib/messages";
 import { readMessageType } from "../lib/messages";
@@ -59,11 +59,12 @@ browser.runtime.onMessage.addListener((message: unknown) => {
 
       // 3. Fetch Boarding Passes ONLY if we have ready bookings
       if (bookingIds.length > 0) {
-        passes = await fetchBoardingPass({
+        // Sorted before the payloads are built: the popup pairs the two by index.
+        passes = sortPassesByDeparture(await fetchBoardingPass({
           customerId,
           bookingIds,
           xAuthToken: token,
-        }, API_BOARDING_PASS_URL);
+        }, API_BOARDING_PASS_URL));
         downloadPayloads = passes.map(buildDownloadPayload);
       }
 
