@@ -12,6 +12,30 @@ let passesCount = 1;
 const barcodelessPasses = new Set();
 let upcomingCount = 1;
 
+// Ryanair pages this list; 30 is what a real account gets back per request.
+const ORDERS_PAGE_SIZE = 30;
+
+/** Opaque cursor, like the real one: it only has to survive a round trip. */
+function encodeNextToken(offset) {
+  return Buffer.from(`offset:${offset}`, "utf8").toString("base64");
+}
+
+function decodeNextToken(token) {
+  const offset = Number.parseInt(Buffer.from(token, "base64").toString("utf8").replace("offset:", ""), 10);
+  return Number.isInteger(offset) && offset > 0 ? offset : 0;
+}
+
+/**
+ * Departure dates scattered rather than ascending, so the extension's own sort
+ * has something to do. The stride is coprime with the cycle, so days repeat only
+ * after 37 bookings.
+ */
+function departureAt(baseISO, index) {
+  const departure = new Date(baseISO);
+  departure.setUTCDate(departure.getUTCDate() + ((index * 13) % 37));
+  return departure.toISOString().replace(".000Z", "Z");
+}
+
 function generateOrders(pCount, uCount) {
   const items = [];
   let idCounter = 1000;
@@ -27,7 +51,7 @@ function generateOrders(pCount, uCount) {
       rawBooking: {
         bookingId: id,
         recordLocator: `PASS${i+1}`,
-        flights: [{ journeyNum: 0, origin: "STN", destination: "DUB", flightNumber: `FR${id}`, times: { departUTC: "2026-01-15T10:00:00Z" } }],
+        flights: [{ journeyNum: 0, origin: "STN", destination: "DUB", flightNumber: `FR${id}`, times: { departUTC: departureAt("2026-01-15T10:00:00Z", i) } }],
         checkins: [{ journeyNum: 0, status: "checkedin" }]
       }
     });
@@ -44,7 +68,7 @@ function generateOrders(pCount, uCount) {
       rawBooking: {
         bookingId: id,
         recordLocator: `NEXT${i+1}`,
-        flights: [{ journeyNum: 0, origin: "DUB", destination: "BER", flightNumber: `FR${id}`, times: { departUTC: "2026-05-20T10:00:00Z" } }],
+        flights: [{ journeyNum: 0, origin: "DUB", destination: "BER", flightNumber: `FR${id}`, times: { departUTC: departureAt("2026-05-20T10:00:00Z", i) } }],
         checkins: [{ journeyNum: 0, status: "nocheckin" }]
       }
     });
@@ -86,6 +110,7 @@ const server = createServer(async (req, res) => {
             <button onclick="updateCounts()">Update Counts</button>
             <p style="margin: 8px 0 0; font-size: 12px; color: #666;">
               Passes Count &ge; 2 includes a pass with no barcode.
+              More than ${ORDERS_PAGE_SIZE} bookings in total are served in pages, so the extension has to follow nextToken.
             </p>
           </div>
           <div style="display: grid; gap: 10px; max-width: 300px;">
@@ -300,8 +325,18 @@ const server = createServer(async (req, res) => {
        return;
     }
 
-    // Dynamic Generation
-    const data = generateOrders(passesCount, upcomingCount);
+    // Dynamic Generation, served one page at a time so the client has to follow
+    // nextToken to see every booking.
+    const query = new URL(req.url, `http://localhost:${PORT}`).searchParams;
+    const token = query.get("nextToken");
+    const offset = token ? decodeNextToken(token) : 0;
+    const all = generateOrders(passesCount, upcomingCount).items;
+    const nextOffset = offset + ORDERS_PAGE_SIZE;
+
+    const data = { items: all.slice(offset, nextOffset) };
+    if (nextOffset < all.length) data.nextToken = encodeNextToken(nextOffset);
+
+    console.log(`  -> orders ${offset}-${Math.min(nextOffset, all.length)} of ${all.length}${data.nextToken ? " (more)" : ""}`);
     res.setHeader("Content-Type", "application/json");
     res.writeHead(200);
     res.end(JSON.stringify(data));

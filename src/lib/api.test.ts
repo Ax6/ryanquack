@@ -176,3 +176,118 @@ describe("Request deadlines", () => {
     );
   });
 });
+
+describe("Order paging", () => {
+  const MOCK_URL = "http://mock-api";
+
+  /** Answers each call with the next body in the list, the way a paged server would. */
+  function pagedFetch(pages: Array<Record<string, unknown>>) {
+    const mockFetch = vi.fn();
+    for (const page of pages) {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => page });
+    }
+    return mockFetch;
+  }
+
+  function requestedUrls(mockFetch: ReturnType<typeof vi.fn>): string[] {
+    return mockFetch.mock.calls.map((call) => call[0] as string);
+  }
+
+  it("should follow nextToken across pages and merge the items in order", async () => {
+    const mockFetch = pagedFetch([
+      { items: [{ rawBooking: { bookingId: 1 } }], nextToken: "page 2" },
+      { items: [{ rawBooking: { bookingId: 2 } }], nextToken: "page/3" },
+      { items: [{ rawBooking: { bookingId: 3 } }] },
+    ]);
+
+    const orders = await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(orders.items.map((item) => item.rawBooking?.bookingId)).toEqual([1, 2, 3]);
+    expect(orders.nextToken).toBeUndefined();
+  });
+
+  it("should ask for ascending order and send the encoded token only after the first page", async () => {
+    const mockFetch = pagedFetch([
+      { items: [], nextToken: "page 2" },
+      { items: [], nextToken: "page/3" },
+      { items: [] },
+    ]);
+
+    await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+
+    const urls = requestedUrls(mockFetch);
+    expect(urls.every((url) => url.includes("order=ASC"))).toBe(true);
+    expect(urls[0]).toContain("/orders/v2/orders/123/details?type=flight&active=true");
+    expect(urls[0]).not.toContain("nextToken");
+    expect(urls[1]).toContain("&nextToken=page%202");
+    expect(urls[2]).toContain("&nextToken=page%2F3");
+  });
+
+  it("should keep the headers and credentials of a single-page request", async () => {
+    const mockFetch = pagedFetch([{ items: [], nextToken: "t2" }, { items: [] }]);
+
+    await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+
+    for (const call of mockFetch.mock.calls) {
+      expect(call[1]).toMatchObject({
+        method: "GET",
+        credentials: "include",
+        headers: { ...BOARDINGPASSES_HEADERS, "x-auth-token": "token" },
+      });
+    }
+  });
+
+  it("should stop when a page carries no nextToken", async () => {
+    const mockFetch = pagedFetch([{ items: [{ rawBooking: { bookingId: 1 } }] }]);
+
+    const orders = await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(orders.items).toHaveLength(1);
+  });
+
+  it("should stop when the server repeats a token", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [{ rawBooking: { bookingId: 1 } }], nextToken: "stuck" }),
+    });
+
+    const orders = await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(orders.items).toHaveLength(2);
+  });
+
+  it("should give up after the page cap when the server never stops", async () => {
+    let page = 0;
+    const mockFetch = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ items: [], nextToken: `page-${page++}` }),
+    }));
+
+    await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+
+    expect(mockFetch).toHaveBeenCalledTimes(50);
+  });
+
+  it("should surface a 403 on a later page as LOGIN_REQUIRED", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [], nextToken: "t2" }) })
+      .mockResolvedValueOnce({ ok: false, status: 403 });
+
+    await expect(
+      fetchOrders("123", "token", MOCK_URL, mockFetch as any)
+    ).rejects.toThrow("LOGIN_REQUIRED");
+  });
+
+  it("should surface any other failure on a later page", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ items: [], nextToken: "t2" }) })
+      .mockResolvedValueOnce({ ok: false, status: 500 });
+
+    await expect(
+      fetchOrders("123", "token", MOCK_URL, mockFetch as any)
+    ).rejects.toThrow("orders failed: 500");
+  });
+});

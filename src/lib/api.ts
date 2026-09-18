@@ -1,4 +1,4 @@
-import type { BoardingPass, DownloadPayload, OrderResponse } from "./ryanair";
+import type { BoardingPass, DownloadPayload, OrderItem, OrderResponse } from "./ryanair";
 
 // Define headers as constants to be reused and tested
 export const BOARDINGPASSES_HEADERS = {
@@ -47,6 +47,17 @@ async function fetchWithTimeout(
   }
 }
 
+/**
+ * Ryanair pages the orders list, so a customer with many bookings only ever saw
+ * the first page. The cap is a circuit breaker: no real account reaches it, but a
+ * server that keeps handing back a token must not spin the extension forever.
+ */
+const MAX_ORDER_PAGES = 50;
+
+/**
+ * Fetches every page of the customer's active flight orders and merges them.
+ * `order=ASC` asks the server for soonest-first, the same way myRyanair does.
+ */
 export async function fetchOrders(
   customerId: string,
   xAuthToken: string,
@@ -58,24 +69,41 @@ export async function fetchOrders(
     "x-auth-token": xAuthToken,
   };
 
-  const response = await fetchWithTimeout(
-    fetchImpl,
-    `${baseUrl}/orders/v2/orders/${customerId}/details?type=flight&active=true`,
-    {
-      method: "GET",
-      headers,
-      credentials: "include",
-    }
-  );
+  const url = `${baseUrl}/orders/v2/orders/${customerId}/details?type=flight&active=true&order=ASC`;
+  const items: OrderItem[] = [];
+  const seenTokens = new Set<string>();
+  let nextToken: string | null | undefined;
 
-  if (!response.ok) {
-    if (response.status === 403) {
-      throw httpError("LOGIN_REQUIRED", response.status);
+  for (let page = 0; page < MAX_ORDER_PAGES; page++) {
+    const response = await fetchWithTimeout(
+      fetchImpl,
+      nextToken ? `${url}&nextToken=${encodeURIComponent(nextToken)}` : url,
+      {
+        method: "GET",
+        headers,
+        credentials: "include",
+      }
+    );
+
+    if (!response.ok) {
+      if (response.status === 403) {
+        throw httpError("LOGIN_REQUIRED", response.status);
+      }
+      throw httpError(`orders failed: ${response.status}`, response.status);
     }
-    throw httpError(`orders failed: ${response.status}`, response.status);
+
+    const body: OrderResponse = await response.json();
+    if (body?.items) {
+      items.push(...body.items);
+    }
+
+    nextToken = body?.nextToken;
+    // A token we have already followed means the server is looping us.
+    if (!nextToken || seenTokens.has(nextToken)) break;
+    seenTokens.add(nextToken);
   }
 
-  return response.json();
+  return { items };
 }
 
 export async function fetchBoardingPass(

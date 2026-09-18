@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, buildPassBaseName, buildPassFilename, hasBarcode } from "./ryanair";
+import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, sortFlightsByDeparture, sortPassesByDeparture, buildPassBaseName, buildPassFilename, hasBarcode } from "./ryanair";
 import type { BoardingPass } from "./ryanair";
 
 /**
@@ -227,5 +227,121 @@ describe("hasBarcode", () => {
 
   it("keeps a code that is padded but not empty", () => {
     expect(hasBarcode(makePass({ barcode: "  M1QUACK/RYAN  " }))).toBe(true);
+  });
+});
+
+describe("Flight ordering", () => {
+  /** One booking per flight, so input order is entirely up to the caller. */
+  function ordersFor(departures: Array<string | undefined>) {
+    return {
+      items: departures.map((departUTC, i) => ({
+        rawBooking: {
+          bookingId: 100 + i,
+          recordLocator: `PNR${i}`,
+          flights: [{
+            journeyNum: 0,
+            origin: "DUB",
+            destination: "STN",
+            flightNumber: `FR${i}`,
+            times: departUTC === undefined ? undefined : { departUTC },
+          }],
+          checkins: [{ journeyNum: 0, status: "nocheckin" }],
+        },
+      })),
+    };
+  }
+
+  it("should sort flights by departure whatever order they arrive in", () => {
+    const summaries = extractFlightsFromOrders(ordersFor([
+      "2026-06-01T10:00:00Z",
+      "2026-01-15T10:00:00Z",
+      "2026-12-24T10:00:00Z",
+      "2026-03-08T10:00:00Z",
+    ]) as any);
+
+    expect(summaries.map(f => f.date)).toEqual([
+      "2026-01-15T10:00:00Z",
+      "2026-03-08T10:00:00Z",
+      "2026-06-01T10:00:00Z",
+      "2026-12-24T10:00:00Z",
+    ]);
+  });
+
+  it("should sort the legs of one booking too", () => {
+    const orders = {
+      items: [{
+        rawBooking: {
+          bookingId: 101,
+          recordLocator: "PNR1",
+          flights: [
+            { journeyNum: 1, origin: "STN", destination: "DUB", flightNumber: "FR2", times: { departUTC: "2026-01-05T10:00:00Z" } },
+            { journeyNum: 0, origin: "DUB", destination: "STN", flightNumber: "FR1", times: { departUTC: "2026-01-01T10:00:00Z" } },
+          ],
+          checkins: [{ journeyNum: 0, status: "checkedin" }, { journeyNum: 1, status: "nocheckin" }],
+        },
+      }],
+    };
+
+    expect(extractFlightsFromOrders(orders as any).map(f => f.flightNumber)).toEqual(["FR1", "FR2"]);
+  });
+
+  it("should put flights with no usable date last, in the order they came", () => {
+    const summaries = extractFlightsFromOrders(ordersFor([
+      undefined,
+      "2026-06-01T10:00:00Z",
+      "not-a-date",
+      "2026-01-15T10:00:00Z",
+    ]) as any);
+
+    expect(summaries.map(f => f.flightNumber)).toEqual(["FR3", "FR1", "FR0", "FR2"]);
+  });
+
+  it("should sort flights already in order without disturbing them", () => {
+    const dates = ["2026-01-15T10:00:00Z", "2026-02-15T10:00:00Z", "2026-03-15T10:00:00Z"];
+    expect(extractFlightsFromOrders(ordersFor(dates) as any).map(f => f.date)).toEqual(dates);
+  });
+});
+
+describe("Pass ordering", () => {
+  /** Ryanair sends a millisecond epoch alongside the ISO time; some fixtures have only one. */
+  const passAt = (pnr: string, departure: Record<string, unknown>) =>
+    makePass({ pnr, departure });
+
+  it("should sort passes by departure, falling back to the ISO time", () => {
+    const passes = [
+      passAt("LATE", { epoch: Date.parse("2026-03-15T10:00:00Z"), dateUTC: "2026-03-15T10:00:00Z" }),
+      passAt("EARLY", { epoch: 0, dateUTC: "2026-01-15T10:00:00Z" }),
+      passAt("MID", { epoch: Date.parse("2026-02-15T10:00:00Z"), dateUTC: "2026-02-15T10:00:00Z" }),
+    ];
+
+    expect(sortPassesByDeparture(passes).map(p => p.pnr)).toEqual(["EARLY", "MID", "LATE"]);
+  });
+
+  it("should put passes with no usable time last, in the order they came", () => {
+    const passes = [
+      passAt("NOTIME", { epoch: 0 }),
+      passAt("LATE", { epoch: Date.parse("2026-03-15T10:00:00Z") }),
+      passAt("BADTIME", { epoch: 0, dateUTC: "not-a-date" }),
+      passAt("EARLY", { epoch: Date.parse("2026-01-15T10:00:00Z") }),
+    ];
+
+    expect(sortPassesByDeparture(passes).map(p => p.pnr)).toEqual(["EARLY", "LATE", "NOTIME", "BADTIME"]);
+  });
+
+  it("should leave the caller's arrays alone", () => {
+    const passes = [
+      passAt("LATE", { epoch: Date.parse("2026-03-15T10:00:00Z") }),
+      passAt("EARLY", { epoch: Date.parse("2026-01-15T10:00:00Z") }),
+    ];
+    const flights = [
+      { date: "2026-03-15T10:00:00Z" },
+      { date: "2026-01-15T10:00:00Z" },
+    ] as any;
+
+    expect(sortPassesByDeparture(passes).map(p => p.pnr)).toEqual(["EARLY", "LATE"]);
+    expect(passes.map(p => p.pnr)).toEqual(["LATE", "EARLY"]);
+
+    expect(sortFlightsByDeparture(flights)[0].date).toBe("2026-01-15T10:00:00Z");
+    expect(flights[0].date).toBe("2026-03-15T10:00:00Z");
   });
 });
