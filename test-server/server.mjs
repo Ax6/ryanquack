@@ -36,45 +36,148 @@ function departureAt(baseISO, index) {
   return departure.toISOString().replace(".000Z", "Z");
 }
 
-function generateOrders(pCount, uCount) {
-  const items = [];
+/**
+ * Ryanair groups several bookings into one trip, and `/details` answers with one
+ * entry per trip — so the other six are invisible there. That is issue #20 seen
+ * from the server side, and the trip listing below is the only place they exist.
+ */
+const HIDDEN_BOOKINGS_PER_TRIP = 6;
+/** Well clear of the 1000-range ids, so a hidden booking is obvious in a log. */
+const HIDDEN_ID_BASE = 9000;
+
+/** One source of truth for both listings, so the union is exactly the hidden six. */
+function generateBookings(pCount, uCount) {
+  const bookings = [];
   let idCounter = 1000;
 
-  // Generate Passes (Checked In)
+  // Passes (Checked In)
   for (let i = 0; i < pCount; i++) {
     const id = idCounter++;
-    items.push({
-      tripId: `trip-${id}`,
-      productId: String(id),
-      type: "flight",
-      payload: { booking: { bookingId: id, pnr: `PASS${i+1}` } },
-      rawBooking: {
-        bookingId: id,
-        recordLocator: `PASS${i+1}`,
-        flights: [{ journeyNum: 0, origin: "STN", destination: "DUB", flightNumber: `FR${id}`, times: { departUTC: departureAt("2026-01-15T10:00:00Z", i) } }],
-        checkins: [{ journeyNum: 0, status: "checkedin" }]
-      }
+    bookings.push({
+      id,
+      pnr: `PASS${i+1}`,
+      origin: "STN",
+      destination: "DUB",
+      flightNumber: `FR${id}`,
+      departUTC: departureAt("2026-01-15T10:00:00Z", i),
+      status: "checkedin",
     });
   }
 
-  // Generate Upcoming (No Checkin)
+  // Upcoming (No Checkin)
   for (let i = 0; i < uCount; i++) {
     const id = idCounter++;
-    items.push({
-      tripId: `trip-${id}`,
-      productId: String(id),
-      type: "flight",
-      payload: { booking: { bookingId: id, pnr: `NEXT${i+1}` } },
-      rawBooking: {
-        bookingId: id,
-        recordLocator: `NEXT${i+1}`,
-        flights: [{ journeyNum: 0, origin: "DUB", destination: "BER", flightNumber: `FR${id}`, times: { departUTC: departureAt("2026-05-20T10:00:00Z", i) } }],
-        checkins: [{ journeyNum: 0, status: "nocheckin" }]
-      }
+    bookings.push({
+      id,
+      pnr: `NEXT${i+1}`,
+      origin: "DUB",
+      destination: "BER",
+      flightNumber: `FR${id}`,
+      departUTC: departureAt("2026-05-20T10:00:00Z", i),
+      status: "nocheckin",
     });
   }
 
+  return bookings;
+}
+
+/** The six travelling companions the first trip hides: same flight, same day. */
+function hiddenBookingsFor(booking) {
+  return Array.from({ length: HIDDEN_BOOKINGS_PER_TRIP }, (_, i) => ({
+    ...booking,
+    id: HIDDEN_ID_BASE + i + 1,
+    pnr: `GROUP${i+1}`,
+  }));
+}
+
+function generateOrders(pCount, uCount) {
+  const items = generateBookings(pCount, uCount).map((booking) => ({
+    tripId: `trip-${booking.id}`,
+    productId: String(booking.id),
+    type: "flight",
+    payload: { booking: { bookingId: booking.id, pnr: booking.pnr } },
+    rawBooking: {
+      bookingId: booking.id,
+      recordLocator: booking.pnr,
+      flights: [{
+        journeyNum: 0,
+        origin: booking.origin,
+        destination: booking.destination,
+        flightNumber: booking.flightNumber,
+        times: { departUTC: booking.departUTC },
+      }],
+      checkins: [{ journeyNum: 0, status: booking.status }],
+    },
+  }));
+
   return { items };
+}
+
+/** A booking as the trip listing nests it: journeys, each holding its segments. */
+function tripBooking(booking) {
+  return {
+    bookingId: booking.id,
+    pnr: booking.pnr,
+    origin: booking.origin,
+    destination: booking.destination,
+    journeys: [{
+      journeyNum: 0,
+      segments: [{
+        origin: booking.origin,
+        destination: booking.destination,
+        flightNumber: booking.flightNumber,
+        departureDateUTC: booking.departUTC,
+        arrivalDateUTC: booking.departUTC,
+      }],
+    }],
+    passengers: [{ first: "Ryan", last: "Quack" }],
+    arrivalDate: booking.departUTC,
+    linkedBookings: [],
+  };
+}
+
+/**
+ * `GET /orders/v2/orders/{cid}` — what myRyanair itself lists. One item per trip,
+ * with every booking of that trip in `flights`; the first trip carries seven.
+ */
+function generateTrips(pCount, uCount) {
+  const items = generateBookings(pCount, uCount).map((booking, index) => ({
+    tripId: `trip-${booking.id}`,
+    startDate: booking.departUTC,
+    endDate: booking.departUTC,
+    flights: index === 0
+      ? [booking, ...hiddenBookingsFor(booking)].map(tripBooking)
+      : [tripBooking(booking)],
+    cars: [],
+    rooms: [],
+    events: [],
+    primeBooking: false,
+  }));
+
+  return { items };
+}
+
+/**
+ * The pnr the listings handed out for this booking. A pass carries no booking id,
+ * so the extension matches passes to flights by pnr: hand back a pnr that belongs
+ * to some other booking and it looks like the pass never arrived.
+ */
+function pnrForBookingId(id) {
+  const bookings = generateBookings(passesCount, upcomingCount);
+  const all = bookings.length > 0 ? [...bookings, ...hiddenBookingsFor(bookings[0])] : [];
+  const found = all.find((booking) => booking.id === id);
+  return found ? found.pnr : `PASS${id - 1000 + 1}`;
+}
+
+/** Serves `all` one page at a time, the way Ryanair cursors both listings. */
+function pageOf(all, token) {
+  const offset = token ? decodeNextToken(token) : 0;
+  const nextOffset = offset + ORDERS_PAGE_SIZE;
+
+  const data = { items: all.slice(offset, nextOffset) };
+  if (nextOffset < all.length) data.nextToken = encodeNextToken(nextOffset);
+
+  return { data, offset, nextOffset };
 }
 
 const server = createServer(async (req, res) => {
@@ -111,6 +214,8 @@ const server = createServer(async (req, res) => {
             <p style="margin: 8px 0 0; font-size: 12px; color: #666;">
               Passes Count &ge; 2 includes a pass with no barcode.
               More than ${ORDERS_PAGE_SIZE} bookings in total are served in pages, so the extension has to follow nextToken.
+              The first trip holds ${HIDDEN_BOOKINGS_PER_TRIP + 1} bookings on one flight, and only the first of them
+              appears in /details — the rest exist solely in the trip listing.
             </p>
           </div>
           <div style="display: grid; gap: 10px; max-width: 300px;">
@@ -278,7 +383,7 @@ const server = createServer(async (req, res) => {
             const p = MOCK_PASSENGERS[i % MOCK_PASSENGERS.length];
             return {
               passId: `PASS_${id}`,
-              pnr: `PASS${id-1000+1}`,
+              pnr: pnrForBookingId(id),
               name: { first: p.first, last: p.last },
               barcode: p.barcode === null
                 ? null
@@ -328,15 +433,36 @@ const server = createServer(async (req, res) => {
     // Dynamic Generation, served one page at a time so the client has to follow
     // nextToken to see every booking.
     const query = new URL(req.url, `http://localhost:${PORT}`).searchParams;
-    const token = query.get("nextToken");
-    const offset = token ? decodeNextToken(token) : 0;
     const all = generateOrders(passesCount, upcomingCount).items;
-    const nextOffset = offset + ORDERS_PAGE_SIZE;
-
-    const data = { items: all.slice(offset, nextOffset) };
-    if (nextOffset < all.length) data.nextToken = encodeNextToken(nextOffset);
+    const { data, offset, nextOffset } = pageOf(all, query.get("nextToken"));
 
     console.log(`  -> orders ${offset}-${Math.min(nextOffset, all.length)} of ${all.length}${data.nextToken ? " (more)" : ""}`);
+    res.setHeader("Content-Type", "application/json");
+    res.writeHead(200);
+    res.end(JSON.stringify(data));
+    return;
+  }
+
+  // Trip listing. Declared after the details route so it cannot shadow it: the
+  // pattern stops at the id, where a `?` or the end of the url must follow.
+  if (req.url.match(/^\/orders\/v2\/orders\/[^\/?]+(\?|$)/) && req.method === "GET") {
+    if (req.headers["client"] !== "ios") {
+      res.writeHead(403); res.end(); return;
+    }
+
+    if (currentScenario === "NO_FLIGHTS") {
+      res.setHeader("Content-Type", "application/json");
+      res.writeHead(200);
+      res.end(JSON.stringify({ items: [] }));
+      return;
+    }
+
+    const query = new URL(req.url, `http://localhost:${PORT}`).searchParams;
+    const all = generateTrips(passesCount, upcomingCount).items;
+    const { data, offset, nextOffset } = pageOf(all, query.get("nextToken"));
+
+    const bookings = data.items.reduce((total, trip) => total + trip.flights.length, 0);
+    console.log(`  -> trips ${offset}-${Math.min(nextOffset, all.length)} of ${all.length} (${bookings} bookings)${data.nextToken ? " (more)" : ""}`);
     res.setHeader("Content-Type", "application/json");
     res.writeHead(200);
     res.end(JSON.stringify(data));

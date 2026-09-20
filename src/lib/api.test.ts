@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchBoardingPass, fetchGoogleWalletToken, downloadPass, fetchOrders, BOARDINGPASSES_HEADERS, GOOGLE_WALLET_HEADERS } from "./api";
+import { fetchBoardingPass, fetchBoardingPassesInChunks, fetchGoogleWalletToken, downloadPass, fetchOrders, fetchTrips, chunkIds, BOARDINGPASSES_HEADERS, GOOGLE_WALLET_HEADERS } from "./api";
+import type { ChunkVisit, PageVisit } from "./api";
 import type { DownloadPayload } from "./ryanair";
 
 const WALLET_PAYLOAD: DownloadPayload = {
@@ -289,5 +290,152 @@ describe("Order paging", () => {
     await expect(
       fetchOrders("123", "token", MOCK_URL, mockFetch as any)
     ).rejects.toThrow("orders failed: 500");
+  });
+});
+
+describe("Trip paging", () => {
+  const MOCK_URL = "http://mock-api";
+
+  function pagedFetch(pages: Array<Record<string, unknown>>) {
+    const mockFetch = vi.fn();
+    for (const page of pages) {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200, json: async () => page });
+    }
+    return mockFetch;
+  }
+
+  it("should follow nextToken through the same loop the orders list uses", async () => {
+    const mockFetch = pagedFetch([
+      { items: [{ tripId: "a" }], nextToken: "page 2" },
+      { items: [{ tripId: "b" }] },
+    ]);
+
+    const trips = await fetchTrips("123", "token", MOCK_URL, mockFetch as any);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(trips.items).toEqual([{ tripId: "a" }, { tripId: "b" }]);
+
+    const urls = mockFetch.mock.calls.map((call) => call[0] as string);
+    expect(urls[0]).toBe(`${MOCK_URL}/orders/v2/orders/123?active=true&order=ASC`);
+    expect(urls[0]).not.toContain("/details");
+    expect(urls[1]).toContain("&nextToken=page%202");
+  });
+
+  it("should send the same headers and credentials as the orders list", async () => {
+    const mockFetch = pagedFetch([{ items: [] }]);
+
+    await fetchTrips("123", "token", MOCK_URL, mockFetch as any);
+
+    expect(mockFetch.mock.calls[0][1]).toMatchObject({
+      method: "GET",
+      credentials: "include",
+      headers: { ...BOARDINGPASSES_HEADERS, "x-auth-token": "token" },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("should stop at the page cap and report failures like the orders list", async () => {
+    const endless = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [], nextToken: `page-${Math.random()}` }),
+    }));
+    await fetchTrips("123", "token", MOCK_URL, endless as any);
+    expect(endless).toHaveBeenCalledTimes(50);
+
+    await expect(
+      fetchTrips("123", "token", MOCK_URL, vi.fn().mockResolvedValue({ ok: false, status: 403 }) as any)
+    ).rejects.toThrow("LOGIN_REQUIRED");
+
+    await expect(
+      fetchTrips("123", "token", MOCK_URL, vi.fn().mockResolvedValue({ ok: false, status: 500 }) as any)
+    ).rejects.toThrow("trips failed: 500");
+  });
+
+  it("should report every page to the listener, with the raw body for a schema sample", async () => {
+    const mockFetch = pagedFetch([
+      { items: [{ tripId: "a" }], nextToken: "t2" },
+      { items: [] },
+    ]);
+    const visits: PageVisit[] = [];
+
+    await fetchTrips("123", "token", MOCK_URL, mockFetch as any, (visit) => visits.push(visit));
+
+    expect(visits).toHaveLength(2);
+    expect(visits[0]).toMatchObject({ status: 200, items: 1, body: { items: [{ tripId: "a" }], nextToken: "t2" } });
+    expect(visits[1]).toMatchObject({ status: 200, items: 0 });
+    expect(typeof visits[0].durationMs).toBe("number");
+  });
+});
+
+describe("Boarding pass chunking", () => {
+  const MOCK_URL = "http://mock-api";
+
+  const ids = (count: number) => Array.from({ length: count }, (_, i) => i + 1);
+
+  /** The bookingIds of each POST the chunker made. */
+  function postedIds(mockFetch: ReturnType<typeof vi.fn>): number[][] {
+    return mockFetch.mock.calls.map((call) => JSON.parse((call[1] as RequestInit).body as string).bookingIds);
+  }
+
+  it("should split the ids into chunks of 20", () => {
+    expect(chunkIds(ids(45)).map((chunk) => chunk.length)).toEqual([20, 20, 5]);
+    expect(chunkIds([])).toEqual([]);
+    expect(chunkIds(ids(20))).toHaveLength(1);
+  });
+
+  it("should ask for each chunk in turn and concatenate the passes", async () => {
+    const mockFetch = vi.fn().mockImplementation(async (_url, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      return { ok: true, status: 200, json: async () => body.bookingIds.map((id: number) => ({ pnr: `P${id}` })) };
+    });
+
+    const passes = await fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: ids(45), xAuthToken: "token" },
+      MOCK_URL,
+      mockFetch as any
+    );
+
+    expect(postedIds(mockFetch).map((chunk) => chunk.length)).toEqual([20, 20, 5]);
+    expect(passes).toHaveLength(45);
+    expect(passes[44]).toEqual({ pnr: "P45" });
+  });
+
+  it("should keep the other chunks when one fails for a reason other than 403", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "A" }] })
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "C" }] });
+    const visits: ChunkVisit[] = [];
+
+    const passes = await fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: [1, 2, 3], xAuthToken: "token" },
+      MOCK_URL,
+      mockFetch as any,
+      (visit) => visits.push(visit),
+      1
+    );
+
+    expect(passes).toEqual([{ pnr: "A" }, { pnr: "C" }]);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(visits.map((visit) => visit.status)).toEqual([200, 500, 200]);
+    expect(visits[1].error).toContain("boardingpasses failed: 500");
+  });
+
+  it("should give up on a 403, because the session is what failed", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "A" }] })
+      .mockResolvedValueOnce({ ok: false, status: 403 });
+
+    await expect(fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: [1, 2, 3], xAuthToken: null },
+      MOCK_URL,
+      mockFetch as any,
+      undefined,
+      1
+    )).rejects.toThrow("LOGIN_REQUIRED");
+
+    // The third chunk was never asked for.
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });

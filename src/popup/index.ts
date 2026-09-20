@@ -14,7 +14,7 @@ import { mapWithConcurrency, retry } from "../lib/concurrency";
 import { errorStatus, errorText } from "../lib/errors";
 import { buildPassBaseName, buildPassFilename, hasBarcode } from "../lib/ryanair";
 import type { BoardingPass, DownloadPayload, FlightSummary } from "../lib/ryanair";
-import type { CachedPasses, PassesResult, RyqMessage } from "../lib/messages";
+import type { CachedPasses, DiagnosticReport, PassesResult, RyqMessage } from "../lib/messages";
 import { buildZip } from "../lib/zip";
 import "./popup.css";
 
@@ -927,6 +927,10 @@ function renderFlights(flights: FlightSummary[]) {
       } else {
         meta.textContent = "Check-in not open";
       }
+    } else if (flight.checkinStatus === "unknown") {
+      // Only the trip listing knew about this booking, and it says nothing about
+      // check-in; the raw word on its own reads like a fault.
+      meta.textContent = "Check-in status unknown";
     } else {
       meta.textContent = flight.checkinStatus;
     }
@@ -978,6 +982,7 @@ async function fetchPasses() {
       if (upcoming.length > 0) {
         renderFlights(upcoming);
       }
+      renderDiagnosticsControl();
 
       setStatus("Offline Mode ☁️");
     }
@@ -1011,6 +1016,8 @@ async function fetchPasses() {
       if (upcoming.length > 0) {
         renderFlights(upcoming);
       }
+      // Offered even with nothing to show: an empty list is the report's whole point.
+      renderDiagnosticsControl();
 
       // Only the completed refresh can trigger automatic printing. The
       // optimistic cache may still contain an old seat or barcode.
@@ -1053,6 +1060,7 @@ async function fetchPasses() {
         if (upcoming.length > 0) {
           renderFlights(upcoming);
         }
+        renderDiagnosticsControl();
       }
       if (autoPrintPending) {
         autoPrintPending = false;
@@ -1107,6 +1115,72 @@ function renderOpenInTabControl() {
   });
 
   header.appendChild(button);
+}
+
+/* ------------------------------------------------------------------ *
+ * Diagnostic report (tab view only)
+ * ------------------------------------------------------------------ */
+
+const DIAGNOSTICS_DETAILS_ID = "diagnostic-report";
+
+/** Shows the exact text that was copied, so nobody has to take our word for it. */
+function revealDiagnosticReport(json: string) {
+  document.getElementById(DIAGNOSTICS_DETAILS_ID)?.remove();
+
+  const details = document.createElement("details");
+  details.id = DIAGNOSTICS_DETAILS_ID;
+  details.className = "diagnostic-report";
+
+  const summary = document.createElement("summary");
+  summary.textContent = "Report contents";
+
+  const pre = document.createElement("pre");
+  pre.textContent = json;
+
+  details.append(summary, pre);
+  bulkActionsEl.appendChild(details);
+}
+
+async function copyDiagnosticReport() {
+  try {
+    const report = (await browser.runtime.sendMessage<RyqMessage, DiagnosticReport | null>({
+      type: "RYQ_GET_DIAGNOSTICS",
+    })) as DiagnosticReport | null | undefined;
+
+    if (!report) {
+      setStatus("Refresh first, then copy the report");
+      return;
+    }
+
+    const json = JSON.stringify(report, null, 2);
+    // Revealed before the copy: a clipboard the browser refuses still leaves the
+    // user something they can select by hand.
+    revealDiagnosticReport(json);
+
+    await navigator.clipboard.writeText(json);
+    setStatus("Diagnostic report copied — paste it into the GitHub issue");
+  } catch (error) {
+    setStatus(`Could not copy the report: ${errorText(error)}`);
+  }
+}
+
+/**
+ * The report describes what Ryanair answered, which is only ever needed when
+ * something is missing from the list — so it lives in the tab view, where there
+ * is room for it, and stays out of the popup entirely.
+ */
+function renderDiagnosticsControl() {
+  if (!isTabView()) return;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "btn-copy-diagnostics";
+  button.className = "btn-copy-diagnostics";
+  button.textContent = "Copy diagnostic report";
+  button.title = "Copy an anonymised description of the last refresh, for a bug report";
+  button.addEventListener("click", () => { void copyDiagnosticReport(); });
+
+  bulkActionsEl.appendChild(button);
 }
 
 /* ------------------------------------------------------------------ *

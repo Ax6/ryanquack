@@ -155,6 +155,215 @@ export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[]
   return sortFlightsByDeparture(flights);
 }
 
+/* ------------------------------------------------------------------ *
+ * Trip listing (`/orders/v2/orders/{cid}`)
+ *
+ * `/details` answers with one entry per trip, and Ryanair groups several
+ * bookings into a trip, so a customer with seven bookings on one flight only
+ * ever saw the first. The listing myRyanair itself reads carries the whole
+ * `flights` array, but nothing below it is documented, so every field here is
+ * looked up by name across the shapes Ryanair plausibly uses and falls back to
+ * an empty string rather than throwing.
+ * ------------------------------------------------------------------ */
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** A trimmed string for anything scalar, "" for objects, arrays and blanks. */
+function text(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+
+type Source = Record<string, unknown> | null;
+
+/** First non-empty `keys` value across `sources`, nearest source first. */
+function pick(sources: Source[], keys: string[]): string {
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of keys) {
+      const found = text(source[key]);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
+/** Keys a departure time has been seen under, plus the ones it plausibly uses. */
+const DEPARTURE_KEYS = [
+  "departUTC",
+  "departureUTC",
+  "departureDateUTC",
+  "departureDate",
+  "depart",
+  "departure",
+  "startDate",
+];
+
+/** `FR1234`, however it is spelled: one field, or a carrier code beside a number. */
+function pickFlightNumber(sources: Source[]): string {
+  for (const source of sources) {
+    if (!source) continue;
+
+    const direct = text(source.flightNumber) || text(source.flightNo);
+    if (direct) return direct;
+
+    const number = text(source.number);
+    if (number) {
+      const carrier = text(source.carrierCode);
+      return carrier ? `${carrier}${number}` : number;
+    }
+  }
+  return "";
+}
+
+/**
+ * Every leg of one booking out of the trip listing. The trip listing says
+ * nothing about check-in, so the status is unknown and the booking is treated as
+ * ready: asking for its pass is how we find out.
+ */
+export function flightsFromTripBooking(booking: unknown): FlightSummary[] {
+  try {
+    const record = asRecord(booking);
+    if (!record) return [];
+
+    const bookingId = Number(record.bookingId);
+    // Without an id the booking cannot be merged, nor asked for a pass.
+    if (!Number.isFinite(bookingId)) return [];
+
+    const pnr = text(record.pnr);
+    const journeys = asArray(record.journeys);
+    const firstSegment = asRecord(asArray(asRecord(journeys[0])?.segments)[0]);
+
+    const build = (journey: Source, segment: Source): FlightSummary => {
+      // Nearest first: the segment knows its own leg, the booking only the trip.
+      const sources: Source[] = [
+        segment,
+        asRecord(segment?.times),
+        journey,
+        asRecord(journey?.times),
+        record,
+      ];
+
+      return {
+        bookingId,
+        pnr,
+        // Route is booking-level on the site; the segment in hand fills the gap.
+        origin: pick([record, segment, firstSegment], ["origin"]),
+        destination: pick([record, segment, firstSegment], ["destination"]),
+        date: pick(sources, DEPARTURE_KEYS),
+        flightNumber: pickFlightNumber(sources),
+        checkinStatus: "unknown",
+        isReady: true,
+      };
+    };
+
+    const flights: FlightSummary[] = [];
+    for (const rawJourney of journeys) {
+      const journey = asRecord(rawJourney);
+      const segments = asArray(journey?.segments);
+
+      if (segments.length === 0) {
+        flights.push(build(journey, null));
+        continue;
+      }
+      for (const rawSegment of segments) {
+        flights.push(build(journey, asRecord(rawSegment)));
+      }
+    }
+
+    // A booking with no journeys is still a booking we can ask for passes.
+    if (flights.length === 0) flights.push(build(null, null));
+
+    return flights;
+  } catch {
+    // An odd shape costs its own booking and nothing else.
+    return [];
+  }
+}
+
+/**
+ * Walks every booking of every trip. Items without a `flights` array (a trip of
+ * only cars, rooms or events) contribute nothing.
+ */
+export function extractFlightsFromTrips(trips: unknown): FlightSummary[] {
+  const items = Array.isArray(trips) ? trips : asArray(asRecord(trips)?.items);
+
+  return items.flatMap((item) =>
+    asArray(asRecord(item)?.flights).flatMap(flightsFromTripBooking)
+  );
+}
+
+/**
+ * Union of the two listings, keyed by booking. `/details` wins where both know a
+ * booking: only it carries the check-in status, which is what decides whether a
+ * pass is worth asking for.
+ */
+export function mergeFlights(
+  fromDetails: FlightSummary[],
+  fromTrips: FlightSummary[]
+): FlightSummary[] {
+  const known = new Set(fromDetails.map((flight) => flight.bookingId));
+
+  return sortFlightsByDeparture([
+    ...fromDetails,
+    ...fromTrips.filter((flight) => !known.has(flight.bookingId)),
+  ]);
+}
+
+/** Uppercased so a case difference between the two listings is not a mismatch. */
+function normalizePnr(value: unknown): string {
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
+/**
+ * A booking only the trip listing knows about is asked for passes on spec — that
+ * is how we find out whether check-in has happened. When no pass comes back it
+ * has to land in the upcoming list, or the booking renders nowhere at all and
+ * the user is back to seeing fewer bookings than they have.
+ *
+ * Only flights with an unknown status are reconsidered: `/details` says what the
+ * check-in status actually is, and that answer stands.
+ */
+export function markUnconfirmedFlights(
+  flights: FlightSummary[],
+  passes: BoardingPass[]
+): FlightSummary[] {
+  const bookingIds = new Set<number>();
+  const pnrs = new Set<string>();
+
+  for (const pass of passes) {
+    // Undocumented, and absent from every pass we have seen — used when it is there.
+    const bookingId = Number((pass as { bookingId?: unknown }).bookingId);
+    if (Number.isFinite(bookingId)) bookingIds.add(bookingId);
+
+    const pnr = normalizePnr(pass.pnr);
+    if (pnr) pnrs.add(pnr);
+  }
+
+  return flights.map((flight) => {
+    if (flight.checkinStatus !== "unknown") return flight;
+
+    const pnr = normalizePnr(flight.pnr);
+    if (bookingIds.has(flight.bookingId) || (pnr && pnrs.has(pnr))) return flight;
+
+    // Passes came back that carry nothing this flight can be matched against.
+    // Assume one of them is its own rather than listing the booking twice.
+    const identifiable = bookingIds.size > 0 || (pnr !== "" && pnrs.size > 0);
+    if (passes.length > 0 && !identifiable) return flight;
+
+    return { ...flight, isReady: false };
+  });
+}
+
 export function filterReadyBookings(flights: FlightSummary[]): number[] {
   return flights.filter(f => f.isReady).map(f => f.bookingId);
 }
@@ -199,6 +408,11 @@ export function decodeCustomerId(token: string): string | null {
 }
 
 export interface OrderItem {
+  /** Ryanair groups bookings into trips, so this repeats across items. */
+  tripId?: string;
+  productId?: string;
+  type?: string;
+  payload?: { booking?: { bookingId?: number; pnr?: string } };
   rawBooking?: {
     bookingId: number;
     recordLocator?: string;

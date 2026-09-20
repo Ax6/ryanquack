@@ -1,4 +1,7 @@
 import type { BoardingPass, DownloadPayload, FlightSummary } from "./ryanair";
+import type { DiagnosticReport } from "./diagnostics";
+
+export type { DiagnosticReport };
 
 /** Auth material the background reads out of the Ryanair session cookie. */
 export interface Tokens {
@@ -6,7 +9,11 @@ export interface Tokens {
 }
 
 /** Messages the popup and the content script send to the background. */
-export type RyqMessageType = "RYQ_GET_TOKENS" | "RYQ_FETCH_BOARDING_PASSES";
+export type RyqMessageType =
+  | "RYQ_GET_TOKENS"
+  | "RYQ_FETCH_BOARDING_PASSES"
+  /** Answered with the last `DiagnosticReport`, or null if nothing has been fetched yet. */
+  | "RYQ_GET_DIAGNOSTICS";
 
 export interface RyqMessage {
   type: RyqMessageType;

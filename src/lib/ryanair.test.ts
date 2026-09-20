@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, sortFlightsByDeparture, sortPassesByDeparture, buildPassBaseName, buildPassFilename, hasBarcode } from "./ryanair";
-import type { BoardingPass } from "./ryanair";
+import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, extractFlightsFromTrips, markUnconfirmedFlights, mergeFlights, sortFlightsByDeparture, sortPassesByDeparture, buildPassBaseName, buildPassFilename, hasBarcode } from "./ryanair";
+import type { BoardingPass, FlightSummary } from "./ryanair";
 
 /**
  * Fixtures carry only the fields the function under test reads; the rest of a
@@ -343,5 +343,248 @@ describe("Pass ordering", () => {
 
     expect(sortFlightsByDeparture(flights)[0].date).toBe("2026-01-15T10:00:00Z");
     expect(flights[0].date).toBe("2026-03-15T10:00:00Z");
+  });
+});
+
+describe("Trip listing", () => {
+  /** One trip holding `count` bookings on the same flight — issue #20 in miniature. */
+  function tripWith(count: number) {
+    return {
+      tripId: "trip-1",
+      startDate: "2026-09-22T06:00:00Z",
+      flights: Array.from({ length: count }, (_, i) => ({
+        bookingId: 5000 + i,
+        pnr: `GROUP${i}`,
+        origin: "STN",
+        destination: "DUB",
+        journeys: [{ segments: [{ flightNumber: "FR1000", departureDateUTC: "2026-09-22T06:00:00Z" }] }],
+      })),
+    };
+  }
+
+  it("should walk every booking of every trip, not just the first", () => {
+    const flights = extractFlightsFromTrips({ items: [tripWith(7)] });
+
+    expect(flights).toHaveLength(7);
+    expect(flights.map(f => f.bookingId)).toEqual([5000, 5001, 5002, 5003, 5004, 5005, 5006]);
+    expect(flights[0]).toMatchObject({
+      pnr: "GROUP0",
+      origin: "STN",
+      destination: "DUB",
+      flightNumber: "FR1000",
+      date: "2026-09-22T06:00:00Z",
+      checkinStatus: "unknown",
+      isReady: true,
+    });
+    expect(flights[0].checkInOpenUTC).toBeUndefined();
+  });
+
+  it("should accept the response object or its items", () => {
+    expect(extractFlightsFromTrips([tripWith(2)])).toHaveLength(2);
+    expect(extractFlightsFromTrips({ items: [tripWith(2)] })).toHaveLength(2);
+  });
+
+  it("should ignore trips that hold no flights", () => {
+    const flights = extractFlightsFromTrips({
+      items: [
+        { tripId: "cars-only", cars: [{ id: 1 }], rooms: [{ id: 2 }], events: [{ id: 3 }] },
+        { tripId: "not-an-array", flights: "nope" },
+        tripWith(1),
+      ],
+    });
+
+    expect(flights.map(f => f.bookingId)).toEqual([5000]);
+  });
+
+  it("should build one flight per segment, falling back to the journey and the booking", () => {
+    const flights = extractFlightsFromTrips({ items: [{
+      flights: [
+        {
+          bookingId: 1,
+          journeys: [
+            { segments: [{ flightNumber: "FR1" }, { flightNumber: "FR2" }] },
+            { segments: [{ flightNumber: "FR3" }] },
+          ],
+        },
+        { bookingId: 2, journeys: [{ flightNumber: "FR4", departureDate: "2026-01-01" }] },
+        { bookingId: 3, flightNumber: "FR5", startDate: "2026-02-02" },
+      ],
+    }] });
+
+    expect(flights.map(f => `${f.bookingId}:${f.flightNumber}`))
+      .toEqual(["1:FR1", "1:FR2", "1:FR3", "2:FR4", "3:FR5"]);
+    expect(flights[3].date).toBe("2026-01-01");
+    expect(flights[4].date).toBe("2026-02-02");
+  });
+
+  it.each([
+    [{ flightNumber: "FR11" }, "FR11"],
+    [{ flightNo: "FR22" }, "FR22"],
+    [{ number: "33" }, "33"],
+    [{ carrierCode: "FR", number: "44" }, "FR44"],
+    [{ seat: "1A" }, ""],
+  ])("should read the flight number out of %o", (segment, expected) => {
+    const flights = extractFlightsFromTrips({ items: [{ flights: [{ bookingId: 1, journeys: [{ segments: [segment] }] }] }] });
+    expect(flights[0].flightNumber).toBe(expected);
+  });
+
+  it.each([
+    "departUTC", "departureUTC", "departureDateUTC", "departureDate", "depart", "departure", "startDate",
+  ])("should read the departure time out of %s", (key) => {
+    const flights = extractFlightsFromTrips({
+      items: [{ flights: [{ bookingId: 1, journeys: [{ segments: [{ [key]: "2026-03-03T08:00:00Z" }] }] }] }],
+    });
+    expect(flights[0].date).toBe("2026-03-03T08:00:00Z");
+  });
+
+  it("should leave the date empty rather than guess at an object", () => {
+    const flights = extractFlightsFromTrips({
+      items: [{ flights: [{ bookingId: 1, journeys: [{ segments: [{ departure: { code: "STN" } }] }] }] }],
+    });
+    expect(flights[0].date).toBe("");
+  });
+
+  it("should drop bookings with no usable id and keep their neighbours", () => {
+    const flights = extractFlightsFromTrips({
+      items: [{ flights: [{ pnr: "NOID" }, { bookingId: "not-a-number" }, { bookingId: "77", pnr: "OK" }] }],
+    });
+
+    expect(flights).toHaveLength(1);
+    expect(flights[0]).toMatchObject({ bookingId: 77, pnr: "OK" });
+  });
+
+  it("should never throw on an odd shape", () => {
+    const hostile = { get flights() { throw new Error("boom"); } };
+
+    expect(() => extractFlightsFromTrips(null)).not.toThrow();
+    expect(() => extractFlightsFromTrips({ items: [null, 7, "x", []] })).not.toThrow();
+    expect(extractFlightsFromTrips({ items: [{ flights: [hostile, { bookingId: 5 }] }] }))
+      .toHaveLength(1);
+  });
+});
+
+describe("Merging the two listings", () => {
+  const flight = (fields: Partial<FlightSummary>): FlightSummary => ({
+    bookingId: 0, pnr: "", origin: "", destination: "", date: "",
+    flightNumber: "", checkinStatus: "unknown", isReady: true, ...fields,
+  });
+
+  it("should keep the details entry where both listings know the booking", () => {
+    const fromDetails = [flight({ bookingId: 1, checkinStatus: "checkedin", date: "2026-01-02T10:00:00Z" })];
+    const fromTrips = [flight({ bookingId: 1, checkinStatus: "unknown", date: "2026-01-02T10:00:00Z" })];
+
+    const merged = mergeFlights(fromDetails, fromTrips);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].checkinStatus).toBe("checkedin");
+  });
+
+  it("should add the bookings only the trip listing knows about", () => {
+    const fromDetails = [flight({ bookingId: 1, date: "2026-01-03T10:00:00Z" })];
+    const fromTrips = [
+      flight({ bookingId: 1, date: "2026-01-03T10:00:00Z" }),
+      flight({ bookingId: 2, date: "2026-01-01T10:00:00Z" }),
+      flight({ bookingId: 3, date: "2026-01-02T10:00:00Z" }),
+    ];
+
+    expect(mergeFlights(fromDetails, fromTrips).map(f => f.bookingId)).toEqual([2, 3, 1]);
+  });
+
+  it("should keep every leg of a booking that has more than one", () => {
+    const fromDetails = [
+      flight({ bookingId: 1, flightNumber: "OUT", date: "2026-01-01T10:00:00Z" }),
+      flight({ bookingId: 1, flightNumber: "BACK", date: "2026-01-08T10:00:00Z" }),
+    ];
+
+    expect(mergeFlights(fromDetails, []).map(f => f.flightNumber)).toEqual(["OUT", "BACK"]);
+    expect(mergeFlights([], fromDetails)).toHaveLength(2);
+  });
+
+  it("should leave the caller's arrays alone", () => {
+    const fromDetails = [flight({ bookingId: 2, date: "2026-02-01T10:00:00Z" })];
+    const fromTrips = [flight({ bookingId: 1, date: "2026-01-01T10:00:00Z" })];
+
+    mergeFlights(fromDetails, fromTrips);
+
+    expect(fromDetails.map(f => f.bookingId)).toEqual([2]);
+    expect(fromTrips.map(f => f.bookingId)).toEqual([1]);
+  });
+});
+
+describe("Reconciling trip-listing bookings against the passes", () => {
+  const flight = (fields: Partial<FlightSummary>): FlightSummary => ({
+    bookingId: 0, pnr: "", origin: "", destination: "", date: "",
+    flightNumber: "", checkinStatus: "unknown", isReady: true, ...fields,
+  });
+
+  const pass = (fields: Record<string, unknown>) => fields as unknown as BoardingPass;
+
+  it("should move a trip-listing booking with no pass into the upcoming list", () => {
+    const flights = [flight({ bookingId: 9001, pnr: "GROUP1" })];
+
+    const marked = markUnconfirmedFlights(flights, [pass({ pnr: "OTHER1" })]);
+
+    expect(marked[0]).toMatchObject({ bookingId: 9001, isReady: false, checkinStatus: "unknown" });
+    // The caller's array is left alone.
+    expect(flights[0].isReady).toBe(true);
+  });
+
+  it("should leave a trip-listing booking that did produce a pass alone", () => {
+    const marked = markUnconfirmedFlights(
+      [flight({ bookingId: 9001, pnr: "GROUP1" })],
+      [pass({ pnr: "group1" })]
+    );
+
+    expect(marked[0].isReady).toBe(true);
+  });
+
+  it("should match on the booking id when the pass carries one", () => {
+    const marked = markUnconfirmedFlights(
+      [flight({ bookingId: 9001, pnr: "GROUP1" }), flight({ bookingId: 9002, pnr: "GROUP2" })],
+      [pass({ bookingId: 9001, pnr: "SOMETHINGELSE" })]
+    );
+
+    expect(marked.map(f => f.isReady)).toEqual([true, false]);
+  });
+
+  it("should never touch a flight that came from the details listing", () => {
+    const marked = markUnconfirmedFlights(
+      [
+        flight({ bookingId: 1, checkinStatus: "checkedin" }),
+        flight({ bookingId: 2, checkinStatus: "nocheckin", isReady: false }),
+      ],
+      []
+    );
+
+    expect(marked.map(f => f.isReady)).toEqual([true, false]);
+  });
+
+  it("should flip every unconfirmed booking when no pass came back at all", () => {
+    const marked = markUnconfirmedFlights(
+      [flight({ bookingId: 9001 }), flight({ bookingId: 9002, pnr: "GROUP2" })],
+      []
+    );
+
+    expect(marked.map(f => f.isReady)).toEqual([false, false]);
+  });
+
+  it("should keep a flight it cannot match against passes that did arrive", () => {
+    // No pnr on the flight, no booking id on the pass: nothing to compare.
+    const marked = markUnconfirmedFlights([flight({ bookingId: 9001, pnr: "" })], [pass({ pnr: "" })]);
+
+    expect(marked[0].isReady).toBe(true);
+  });
+
+  it("should keep every flight, whatever it decides", () => {
+    const flights = [
+      flight({ bookingId: 1, checkinStatus: "checkedin" }),
+      flight({ bookingId: 9001, pnr: "GROUP1" }),
+      flight({ bookingId: 9002, pnr: "GROUP2" }),
+    ];
+
+    const marked = markUnconfirmedFlights(flights, [pass({ pnr: "GROUP1" })]);
+
+    expect(marked.map(f => f.bookingId)).toEqual([1, 9001, 9002]);
+    expect(marked.map(f => f.isReady)).toEqual([true, true, false]);
   });
 });

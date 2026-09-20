@@ -54,27 +54,41 @@ async function fetchWithTimeout(
  */
 const MAX_ORDER_PAGES = 50;
 
-/**
- * Fetches every page of the customer's active flight orders and merges them.
- * `order=ASC` asks the server for soonest-first, the same way myRyanair does.
- */
-export async function fetchOrders(
-  customerId: string,
-  xAuthToken: string,
-  baseUrl: string,
-  fetchImpl: typeof fetch = fetch
-): Promise<OrderResponse> {
-  const headers = {
-    ...BOARDINGPASSES_HEADERS,
-    "x-auth-token": xAuthToken,
-  };
+/** What one request cost and answered. Diagnostics records these; nothing else needs them. */
+export interface PageVisit {
+  status: number;
+  durationMs: number;
+  items: number;
+  /** The raw body, so a caller can take a schema skeleton of it. Never persisted as-is. */
+  body: unknown;
+}
 
-  const url = `${baseUrl}/orders/v2/orders/${customerId}/details?type=flight&active=true&order=ASC`;
-  const items: OrderItem[] = [];
+export type PageListener = (visit: PageVisit) => void;
+
+/** Shape both order listings share: a page of items plus the cursor to the next one. */
+interface PagedBody<T> {
+  items?: T[];
+  nextToken?: string | null;
+}
+
+/**
+ * Follows `nextToken` from `url` until the server stops handing one back, merging
+ * every page's items. `url` must already carry a query string: the cursor is
+ * appended with `&`.
+ */
+async function fetchAllPages<T>(
+  url: string,
+  headers: Record<string, string>,
+  label: string,
+  fetchImpl: typeof fetch,
+  onPage?: PageListener
+): Promise<T[]> {
+  const items: T[] = [];
   const seenTokens = new Set<string>();
   let nextToken: string | null | undefined;
 
   for (let page = 0; page < MAX_ORDER_PAGES; page++) {
+    const startedAt = Date.now();
     const response = await fetchWithTimeout(
       fetchImpl,
       nextToken ? `${url}&nextToken=${encodeURIComponent(nextToken)}` : url,
@@ -89,19 +103,82 @@ export async function fetchOrders(
       if (response.status === 403) {
         throw httpError("LOGIN_REQUIRED", response.status);
       }
-      throw httpError(`orders failed: ${response.status}`, response.status);
+      throw httpError(`${label} failed: ${response.status}`, response.status);
     }
 
-    const body: OrderResponse = await response.json();
+    const body: PagedBody<T> = await response.json();
     if (body?.items) {
       items.push(...body.items);
     }
+
+    onPage?.({
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      items: body?.items?.length ?? 0,
+      body,
+    });
 
     nextToken = body?.nextToken;
     // A token we have already followed means the server is looping us.
     if (!nextToken || seenTokens.has(nextToken)) break;
     seenTokens.add(nextToken);
   }
+
+  return items;
+}
+
+/** The `/details` listing, with the customer id blanked so it can be shared. */
+export function ordersUrl(customerId: string, baseUrl: string): string {
+  return `${baseUrl}/orders/v2/orders/${customerId}/details?type=flight&active=true&order=ASC`;
+}
+
+/** The trip listing myRyanair itself uses. Same paging, one entry per trip. */
+export function tripsUrl(customerId: string, baseUrl: string): string {
+  return `${baseUrl}/orders/v2/orders/${customerId}?active=true&order=ASC`;
+}
+
+/**
+ * Fetches every page of the customer's active flight orders and merges them.
+ * `order=ASC` asks the server for soonest-first, the same way myRyanair does.
+ */
+export async function fetchOrders(
+  customerId: string,
+  xAuthToken: string,
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch,
+  onPage?: PageListener
+): Promise<OrderResponse> {
+  const items = await fetchAllPages<OrderItem>(
+    ordersUrl(customerId, baseUrl),
+    { ...BOARDINGPASSES_HEADERS, "x-auth-token": xAuthToken },
+    "orders",
+    fetchImpl,
+    onPage
+  );
+
+  return { items };
+}
+
+/**
+ * Fetches the trip listing the myRyanair site reads. `/details` answers with one
+ * entry per trip, so a trip holding several bookings loses all but one of them;
+ * this listing carries the whole `flights` array, and the caller unions the two.
+ * Loosely typed on purpose: the nesting below `flights` is not documented.
+ */
+export async function fetchTrips(
+  customerId: string,
+  xAuthToken: string,
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch,
+  onPage?: PageListener
+): Promise<{ items: unknown[] }> {
+  const items = await fetchAllPages<unknown>(
+    tripsUrl(customerId, baseUrl),
+    { ...BOARDINGPASSES_HEADERS, "x-auth-token": xAuthToken },
+    "trips",
+    fetchImpl,
+    onPage
+  );
 
   return { items };
 }
@@ -137,6 +214,74 @@ export async function fetchBoardingPass(
   }
 
   return response.json();
+}
+
+/**
+ * Ryanair answers a request for every booking at once with a single failure, and
+ * an account can now carry far more bookings than before, so the ids are asked
+ * for in batches small enough that one bad booking only costs its own batch.
+ */
+export const BOARDING_PASS_CHUNK_SIZE = 20;
+
+export function chunkIds(ids: number[], size = BOARDING_PASS_CHUNK_SIZE): number[][] {
+  const chunks: number[][] = [];
+  for (let start = 0; start < ids.length; start += Math.max(1, size)) {
+    chunks.push(ids.slice(start, start + Math.max(1, size)));
+  }
+  return chunks;
+}
+
+/** What one chunk cost and answered, for diagnostics. */
+export interface ChunkVisit {
+  bookingIds: number;
+  status: number | null;
+  durationMs: number;
+  items: number;
+  error?: string;
+  body?: unknown;
+}
+
+/**
+ * Asks for the passes chunk by chunk and concatenates them. A 403 still ends the
+ * whole fetch (the session is gone, or Ryanair has no passes at all), but any
+ * other failure costs only its own chunk: the rest of the account still loads.
+ * Sequential rather than concurrent — Ryanair sheds bursts of these.
+ */
+export async function fetchBoardingPassesInChunks(
+  payload: { customerId: string; bookingIds: number[]; xAuthToken: string | null },
+  baseUrl: string,
+  fetchImpl: typeof fetch = fetch,
+  onChunk?: (visit: ChunkVisit) => void,
+  size = BOARDING_PASS_CHUNK_SIZE
+): Promise<BoardingPass[]> {
+  const passes: BoardingPass[] = [];
+
+  for (const bookingIds of chunkIds(payload.bookingIds, size)) {
+    const startedAt = Date.now();
+    try {
+      const chunk = await fetchBoardingPass({ ...payload, bookingIds }, baseUrl, fetchImpl);
+      passes.push(...chunk);
+      onChunk?.({
+        bookingIds: bookingIds.length,
+        status: 200,
+        durationMs: Date.now() - startedAt,
+        items: chunk.length,
+        body: chunk,
+      });
+    } catch (error) {
+      const status = (error as { status?: unknown } | null)?.status;
+      onChunk?.({
+        bookingIds: bookingIds.length,
+        status: typeof status === "number" ? status : null,
+        durationMs: Date.now() - startedAt,
+        items: 0,
+        error: (error as { message?: string } | null)?.message ?? String(error),
+      });
+      if (status === 403) throw error;
+    }
+  }
+
+  return passes;
 }
 
 export async function downloadPass(
