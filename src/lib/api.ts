@@ -1,4 +1,6 @@
 import type { BoardingPass, DownloadPayload, OrderItem, OrderResponse } from "./ryanair";
+import { redactCustomerId } from "./diagnostics";
+import { errorText } from "./errors";
 
 // Define headers as constants to be reused and tested
 export const BOARDINGPASSES_HEADERS = {
@@ -242,9 +244,18 @@ export interface ChunkVisit {
 }
 
 /**
+ * Requests allowed per chunk the account started with. A chunk that fails is
+ * halved and retried down to single bookings, so one bad booking costs one pass
+ * instead of twenty — but an endpoint that fails for every id would bisect its
+ * way through a request per booking, and this is where that stops.
+ */
+export const BOARDING_PASS_REQUEST_BUDGET = 4;
+
+/**
  * Asks for the passes chunk by chunk and concatenates them. A 403 still ends the
- * whole fetch (the session is gone, or Ryanair has no passes at all), but any
- * other failure costs only its own chunk: the rest of the account still loads.
+ * whole fetch (the session is gone, or Ryanair has no passes at all); any other
+ * failure is narrowed down by halving the chunk and asking again, so only the
+ * bookings Ryanair actually refuses lose their passes.
  * Sequential rather than concurrent — Ryanair sheds bursts of these.
  */
 export async function fetchBoardingPassesInChunks(
@@ -255,8 +266,28 @@ export async function fetchBoardingPassesInChunks(
   size = BOARDING_PASS_CHUNK_SIZE
 ): Promise<BoardingPass[]> {
   const passes: BoardingPass[] = [];
+  const chunks = chunkIds(payload.bookingIds, size);
+  let budget = chunks.length * BOARDING_PASS_REQUEST_BUDGET;
+  let exhausted = false;
 
-  for (const bookingIds of chunkIds(payload.bookingIds, size)) {
+  const ask = async (bookingIds: number[]): Promise<void> => {
+    if (bookingIds.length === 0) return;
+    if (budget <= 0) {
+      // Recorded once: a report that just stops short says nothing about why.
+      if (!exhausted) {
+        exhausted = true;
+        onChunk?.({
+          bookingIds: bookingIds.length,
+          status: null,
+          durationMs: 0,
+          items: 0,
+          error: "gave up: too many failed boarding pass requests",
+        });
+      }
+      return;
+    }
+
+    budget--;
     const startedAt = Date.now();
     try {
       const chunk = await fetchBoardingPass({ ...payload, bookingIds }, baseUrl, fetchImpl);
@@ -275,11 +306,20 @@ export async function fetchBoardingPassesInChunks(
         status: typeof status === "number" ? status : null,
         durationMs: Date.now() - startedAt,
         items: 0,
-        error: (error as { message?: string } | null)?.message ?? String(error),
+        // The id is not in this url, but it can be in whatever the network threw.
+        error: redactCustomerId(errorText(error), payload.customerId),
       });
       if (status === 403) throw error;
+
+      if (bookingIds.length > 1) {
+        const middle = Math.ceil(bookingIds.length / 2);
+        await ask(bookingIds.slice(0, middle));
+        await ask(bookingIds.slice(middle));
+      }
     }
-  }
+  };
+
+  for (const chunk of chunks) await ask(chunk);
 
   return passes;
 }

@@ -185,16 +185,33 @@ function text(value: unknown): string {
 
 type Source = Record<string, unknown> | null;
 
+/** Reads one key. A body that throws from a getter costs its own node, not the trip. */
+function read(source: Record<string, unknown>, key: string): unknown {
+  try {
+    return source[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** A lookup's answer and the key it came from: the report describes the parse. */
+interface Picked {
+  value: string;
+  key: string | null;
+}
+
+const NOT_FOUND: Picked = { value: "", key: null };
+
 /** First non-empty `keys` value across `sources`, nearest source first. */
-function pick(sources: Source[], keys: string[]): string {
+function pick(sources: Source[], keys: string[]): Picked {
   for (const source of sources) {
     if (!source) continue;
     for (const key of keys) {
-      const found = text(source[key]);
-      if (found) return found;
+      const found = text(read(source, key));
+      if (found) return { value: found, key };
     }
   }
-  return "";
+  return NOT_FOUND;
 }
 
 /** Keys a departure time has been seen under, plus the ones it plausibly uses. */
@@ -208,115 +225,306 @@ const DEPARTURE_KEYS = [
   "startDate",
 ];
 
+/** Keys a record locator has been seen under, most specific first. */
+const PNR_KEYS = ["pnr", "recordLocator", "recordNumber", "bookingReference", "reference"];
+
+const ORIGIN_KEYS = ["origin", "originStation", "departureStation", "from"];
+const DESTINATION_KEYS = ["destination", "destinationStation", "arrivalStation", "to"];
+
 /** `FR1234`, however it is spelled: one field, or a carrier code beside a number. */
-function pickFlightNumber(sources: Source[]): string {
+function pickFlightNumber(sources: Source[]): Picked {
   for (const source of sources) {
     if (!source) continue;
 
-    const direct = text(source.flightNumber) || text(source.flightNo);
-    if (direct) return direct;
+    for (const key of ["flightNumber", "flightNo"]) {
+      const direct = text(read(source, key));
+      if (direct) return { value: direct, key };
+    }
 
-    const number = text(source.number);
+    const number = text(read(source, "number"));
     if (number) {
-      const carrier = text(source.carrierCode);
-      return carrier ? `${carrier}${number}` : number;
+      const carrier = text(read(source, "carrierCode"));
+      return { value: carrier ? `${carrier}${number}` : number, key: "number" };
     }
   }
-  return "";
+  return NOT_FOUND;
 }
 
-/**
- * Every leg of one booking out of the trip listing. The trip listing says
- * nothing about check-in, so the status is unknown and the booking is treated as
- * ready: asking for its pass is how we find out.
- */
-export function flightsFromTripBooking(booking: unknown): FlightSummary[] {
+/* ------------------------------------------------------------------ *
+ * Finding the bookings inside a trip
+ *
+ * The id was read as `record.bookingId` and the booking dropped when that came
+ * back as NaN, which is a guess at an undocumented key that silently costs the
+ * whole booking when it is wrong. Nothing below `flights[]` is spelled our way
+ * on purpose, so a booking is now recognised by what it carries rather than by
+ * what it is called.
+ * ------------------------------------------------------------------ */
+
+/** What an id is plausibly called: `id`, `bookingId`, `bookingRef`, … */
+const BOOKING_ID_KEYS = [/^(booking)?id$/i, /booking(id|number|ref|reference)/i];
+/** A key whose value is a record locator, if the value looks like one. */
+const PNR_KEY = /pnr|record|locator|reference/i;
+const PNR_VALUE = /^[A-Z0-9]{6}$/;
+/** Arrays only a booking carries. */
+const BOOKING_ARRAY_KEY = /^(journeys|segments|legs|passengers)$/i;
+
+/** Object levels below a trip a booking may hide at. */
+const BOOKING_MAX_DEPTH = 4;
+/** Nodes weighed per trip, so a pathological body cannot fan the walk out. */
+const BOOKING_MAX_CANDIDATES = 64;
+
+interface BookingNode {
+  record: Record<string, unknown>;
+  entries: Array<[string, unknown]>;
+  id: number;
+  idKey: string;
+  idNumeric: boolean;
+}
+
+/** The own keys of an object, or null for anything else — a throwing getter included. */
+function entriesOf(value: unknown): Array<[string, unknown]> | null {
+  if (!asRecord(value)) return null;
   try {
-    const record = asRecord(booking);
-    if (!record) return [];
-
-    const bookingId = Number(record.bookingId);
-    // Without an id the booking cannot be merged, nor asked for a pass.
-    if (!Number.isFinite(bookingId)) return [];
-
-    const pnr = text(record.pnr);
-    const journeys = asArray(record.journeys);
-    const firstSegment = asRecord(asArray(asRecord(journeys[0])?.segments)[0]);
-
-    const build = (journey: Source, segment: Source): FlightSummary => {
-      // Nearest first: the segment knows its own leg, the booking only the trip.
-      const sources: Source[] = [
-        segment,
-        asRecord(segment?.times),
-        journey,
-        asRecord(journey?.times),
-        record,
-      ];
-
-      return {
-        bookingId,
-        pnr,
-        // Route is booking-level on the site; the segment in hand fills the gap.
-        origin: pick([record, segment, firstSegment], ["origin"]),
-        destination: pick([record, segment, firstSegment], ["destination"]),
-        date: pick(sources, DEPARTURE_KEYS),
-        flightNumber: pickFlightNumber(sources),
-        checkinStatus: "unknown",
-        isReady: true,
-      };
-    };
-
-    const flights: FlightSummary[] = [];
-    for (const rawJourney of journeys) {
-      const journey = asRecord(rawJourney);
-      const segments = asArray(journey?.segments);
-
-      if (segments.length === 0) {
-        flights.push(build(journey, null));
-        continue;
-      }
-      for (const rawSegment of segments) {
-        flights.push(build(journey, asRecord(rawSegment)));
-      }
-    }
-
-    // A booking with no journeys is still a booking we can ask for passes.
-    if (flights.length === 0) flights.push(build(null, null));
-
-    return flights;
+    return Object.entries(value as Record<string, unknown>);
   } catch {
-    // An odd shape costs its own booking and nothing else.
-    return [];
+    return null;
   }
 }
 
+/** A positive integer, written as one or as digits. Anything else is not an id. */
+function bookingIdOf(value: unknown): number | null {
+  const digits = typeof value === "string" && /^\d+$/.test(value.trim())
+    ? Number(value.trim())
+    : value;
+
+  return typeof digits === "number" && Number.isSafeInteger(digits) && digits > 0 ? digits : null;
+}
+
 /**
- * Walks every booking of every trip. Items without a `flights` array (a trip of
- * only cars, rooms or events) contribute nothing.
+ * An id alone is not enough: `passengers[].id` is an id on a node that is not a
+ * booking. Something only a booking carries has to be on the same node.
+ */
+function looksLikeBooking(entries: Array<[string, unknown]>): boolean {
+  return entries.some(([key, value]) =>
+    (PNR_KEY.test(key) && PNR_VALUE.test(text(value).toUpperCase()))
+    || (BOOKING_ARRAY_KEY.test(key) && Array.isArray(value)));
+}
+
+function bookingNode(value: unknown, entries: Array<[string, unknown]>): BookingNode | null {
+  for (const [key, raw] of entries) {
+    if (!BOOKING_ID_KEYS.some((pattern) => pattern.test(key))) continue;
+
+    const id = bookingIdOf(raw);
+    if (id === null) continue;
+    if (!looksLikeBooking(entries)) return null;
+
+    return {
+      record: value as Record<string, unknown>,
+      entries,
+      id,
+      idKey: key,
+      idNumeric: typeof raw === "number",
+    };
+  }
+  return null;
+}
+
+/**
+ * Every booking under one trip, wherever Ryanair keeps it. Nothing inside an
+ * accepted booking is walked, so `passengers[].id` and `linkedBookings[]` cannot
+ * pass themselves off as bookings of the trip.
+ */
+function harvestBookings(trip: unknown): BookingNode[] {
+  const found: BookingNode[] = [];
+  const seen = new Set<number>();
+  let weighed = 0;
+
+  const walk = (node: unknown, depth: number): void => {
+    // An array is not a level: `flights[0]` sits where `flights` does.
+    if (Array.isArray(node)) {
+      for (const entry of node) walk(entry, depth);
+      return;
+    }
+    if (depth > BOOKING_MAX_DEPTH || weighed >= BOOKING_MAX_CANDIDATES) return;
+
+    const entries = entriesOf(node);
+    if (!entries) return;
+    weighed++;
+
+    const booking = bookingNode(node, entries);
+    if (booking) {
+      // The same booking listed twice in a trip is one booking.
+      if (!seen.has(booking.id)) {
+        seen.add(booking.id);
+        found.push(booking);
+      }
+      return;
+    }
+
+    for (const [, value] of entries) walk(value, depth + 1);
+  };
+
+  walk(trip, 1);
+  return found;
+}
+
+/** Object levels below a booking a leg may hide at. */
+const LEG_MAX_DEPTH = 4;
+const LEG_MAX_CANDIDATES = 64;
+
+/** Nearest first: the leg knows its own times, an ancestor only the journey. */
+function sourcesOf(chain: Array<Record<string, unknown>>): Source[] {
+  return chain.flatMap((node) => [node, asRecord(read(node, "times"))]);
+}
+
+/** A node that knows a flight number or a departure time is a leg. */
+function isLeg(record: Record<string, unknown>): boolean {
+  const sources = [record, asRecord(read(record, "times"))];
+  return pickFlightNumber(sources).value !== "" || pick(sources, DEPARTURE_KEYS).value !== "";
+}
+
+/**
+ * The legs of one booking, found the same way the booking itself was: by what a
+ * node knows rather than by where it sits, so a listing that nests its segments
+ * a level deeper than we guessed still renders.
+ */
+function collectLegs(booking: BookingNode): Source[][] {
+  const legs: Source[][] = [];
+  let weighed = 0;
+
+  const walk = (node: unknown, chain: Array<Record<string, unknown>>, depth: number): void => {
+    if (Array.isArray(node)) {
+      for (const entry of node) walk(entry, chain, depth);
+      return;
+    }
+    if (depth > LEG_MAX_DEPTH || weighed >= LEG_MAX_CANDIDATES) return;
+
+    const entries = entriesOf(node);
+    if (!entries) return;
+    weighed++;
+
+    const record = node as Record<string, unknown>;
+    const inner = [record, ...chain];
+    if (isLeg(record)) {
+      legs.push(sourcesOf(inner));
+      return;
+    }
+
+    for (const [, value] of entries) walk(value, inner, depth + 1);
+  };
+
+  for (const [, value] of booking.entries) walk(value, [booking.record], 1);
+  return legs;
+}
+
+/**
+ * Which key each lookup matched on. Every value is a constant of ours, so the
+ * diagnostic report can carry the lot without carrying anything of the user's.
+ */
+export interface TripBookingTrace {
+  parsed: boolean;
+  bookingIdKey: string | null;
+  bookingIdNumeric: boolean;
+  pnrKey: string | null;
+  dateKey: string | null;
+  flightNumberKey: string | null;
+  routeKey: string | null;
+}
+
+/** What the trace says about a node the harvest did not accept as a booking. */
+export const UNPARSED_TRIP_BOOKING: TripBookingTrace = {
+  parsed: false,
+  bookingIdKey: null,
+  bookingIdNumeric: false,
+  pnrKey: null,
+  dateKey: null,
+  flightNumberKey: null,
+  routeKey: null,
+};
+
+export interface TripBookingParse {
+  flights: FlightSummary[];
+  trace: TripBookingTrace;
+}
+
+function parseBooking(booking: BookingNode): TripBookingParse {
+  const record = booking.record;
+  const legs = collectLegs(booking);
+  const firstLeg = legs[0]?.[0] ?? null;
+  const pnr = pick([record], PNR_KEYS);
+
+  const trace: TripBookingTrace = {
+    parsed: true,
+    bookingIdKey: booking.idKey,
+    bookingIdNumeric: booking.idNumeric,
+    pnrKey: pnr.key,
+    dateKey: null,
+    flightNumberKey: null,
+    routeKey: null,
+  };
+
+  const build = (sources: Source[]): FlightSummary => {
+    const leg = sources[0] ?? null;
+    const date = pick(sources, DEPARTURE_KEYS);
+    const flightNumber = pickFlightNumber(sources);
+    // Route is booking-level on the site; the leg in hand fills the gap.
+    const origin = pick([record, leg, firstLeg], ORIGIN_KEYS);
+    const destination = pick([record, leg, firstLeg], DESTINATION_KEYS);
+
+    // The first leg that answers is the one the report describes; a later leg
+    // reading the same keys says nothing new.
+    trace.dateKey ??= date.key;
+    trace.flightNumberKey ??= flightNumber.key;
+    trace.routeKey ??= origin.key ?? destination.key;
+
+    return {
+      bookingId: booking.id,
+      pnr: pnr.value,
+      origin: origin.value,
+      destination: destination.value,
+      date: date.value,
+      flightNumber: flightNumber.value,
+      checkinStatus: "unknown",
+      isReady: true,
+    };
+  };
+
+  return {
+    // A booking with no legs is still a booking we can ask for passes.
+    flights: legs.length > 0 ? legs.map(build) : [build(sourcesOf([record]))],
+    trace,
+  };
+}
+
+/**
+ * Every booking of one trip, with the keys each field was read out of. The trip
+ * listing says nothing about check-in, so the status is unknown and the booking
+ * is treated as ready: asking for its pass is how we find out. A booking no pass
+ * comes back for is moved to the upcoming list by `markUnconfirmedFlights`, so
+ * nothing found here can end up rendering nowhere.
+ */
+export function parseTripBookings(trip: unknown): TripBookingParse[] {
+  const parsed: TripBookingParse[] = [];
+
+  for (const booking of harvestBookings(trip)) {
+    try {
+      parsed.push(parseBooking(booking));
+    } catch {
+      // An odd shape costs its own booking and nothing else.
+    }
+  }
+
+  return parsed;
+}
+
+/**
+ * Walks every booking of every trip. Items holding no booking (a trip of only
+ * cars, rooms or events) contribute nothing.
  */
 export function extractFlightsFromTrips(trips: unknown): FlightSummary[] {
   const items = Array.isArray(trips) ? trips : asArray(asRecord(trips)?.items);
 
-  return items.flatMap((item) =>
-    asArray(asRecord(item)?.flights).flatMap(flightsFromTripBooking)
-  );
-}
-
-/**
- * Union of the two listings, keyed by booking. `/details` wins where both know a
- * booking: only it carries the check-in status, which is what decides whether a
- * pass is worth asking for.
- */
-export function mergeFlights(
-  fromDetails: FlightSummary[],
-  fromTrips: FlightSummary[]
-): FlightSummary[] {
-  const known = new Set(fromDetails.map((flight) => flight.bookingId));
-
-  return sortFlightsByDeparture([
-    ...fromDetails,
-    ...fromTrips.filter((flight) => !known.has(flight.bookingId)),
-  ]);
+  return items.flatMap((item) => parseTripBookings(item).flatMap((parse) => parse.flights));
 }
 
 /** Uppercased so a case difference between the two listings is not a mismatch. */
@@ -325,18 +533,35 @@ function normalizePnr(value: unknown): string {
 }
 
 /**
- * A booking only the trip listing knows about is asked for passes on spec — that
- * is how we find out whether check-in has happened. When no pass comes back it
- * has to land in the upcoming list, or the booking renders nowhere at all and
- * the user is back to seeing fewer bookings than they have.
- *
- * Only flights with an unknown status are reconsidered: `/details` says what the
- * check-in status actually is, and that answer stands.
+ * Union of the two listings, keyed by booking. `/details` wins where both know a
+ * booking: only it carries the check-in status, which is what decides whether a
+ * pass is worth asking for. The pnr is a second key because the two listings are
+ * not known to share an id space, and a booking counted twice is a booking the
+ * user sees twice.
  */
-export function markUnconfirmedFlights(
-  flights: FlightSummary[],
-  passes: BoardingPass[]
+export function mergeFlights(
+  fromDetails: FlightSummary[],
+  fromTrips: FlightSummary[]
 ): FlightSummary[] {
+  const knownIds = new Set(fromDetails.map((flight) => flight.bookingId));
+  const knownPnrs = new Set(
+    fromDetails.map((flight) => normalizePnr(flight.pnr)).filter(Boolean)
+  );
+
+  return sortFlightsByDeparture([
+    ...fromDetails,
+    ...fromTrips.filter((flight) =>
+      !knownIds.has(flight.bookingId) && !knownPnrs.has(normalizePnr(flight.pnr))),
+  ]);
+}
+
+/** What the passes that came back can be matched against. */
+export interface PassMatchIndex {
+  bookingIds: Set<number>;
+  pnrs: Set<string>;
+}
+
+export function indexPasses(passes: BoardingPass[]): PassMatchIndex {
   const bookingIds = new Set<number>();
   const pnrs = new Set<string>();
 
@@ -349,19 +574,36 @@ export function markUnconfirmedFlights(
     if (pnr) pnrs.add(pnr);
   }
 
-  return flights.map((flight) => {
-    if (flight.checkinStatus !== "unknown") return flight;
+  return { bookingIds, pnrs };
+}
 
-    const pnr = normalizePnr(flight.pnr);
-    if (bookingIds.has(flight.bookingId) || (pnr && pnrs.has(pnr))) return flight;
+/** By booking id where the pass carries one, by pnr otherwise. */
+export function hasMatchingPass(flight: FlightSummary, index: PassMatchIndex): boolean {
+  if (index.bookingIds.has(flight.bookingId)) return true;
 
-    // Passes came back that carry nothing this flight can be matched against.
-    // Assume one of them is its own rather than listing the booking twice.
-    const identifiable = bookingIds.size > 0 || (pnr !== "" && pnrs.size > 0);
-    if (passes.length > 0 && !identifiable) return flight;
+  const pnr = normalizePnr(flight.pnr);
+  return pnr !== "" && index.pnrs.has(pnr);
+}
 
-    return { ...flight, isReady: false };
-  });
+/**
+ * Every flight either matches a pass that came back or lands in the upcoming
+ * list, because the popup only renders the two and a flight in neither is a
+ * booking the user cannot see at all.
+ *
+ * Nothing is exempt. A check-in status from `/details` used to be taken as proof
+ * the booking was accounted for, and a body of passes we could match nothing
+ * against used to be read as "they must all be in there" — both leave a booking
+ * rendering nowhere. Listing a booking twice is visible and can be reported;
+ * losing it is neither.
+ */
+export function markUnconfirmedFlights(
+  flights: FlightSummary[],
+  passes: BoardingPass[]
+): FlightSummary[] {
+  const index = indexPasses(passes);
+
+  return flights.map((flight) =>
+    !flight.isReady || hasMatchingPass(flight, index) ? flight : { ...flight, isReady: false });
 }
 
 export function filterReadyBookings(flights: FlightSummary[]): number[] {

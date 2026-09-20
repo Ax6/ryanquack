@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchBoardingPass, fetchBoardingPassesInChunks, fetchGoogleWalletToken, downloadPass, fetchOrders, fetchTrips, chunkIds, BOARDINGPASSES_HEADERS, GOOGLE_WALLET_HEADERS } from "./api";
+import { fetchBoardingPass, fetchBoardingPassesInChunks, fetchGoogleWalletToken, downloadPass, fetchOrders, fetchTrips, chunkIds, BOARDINGPASSES_HEADERS, BOARDING_PASS_REQUEST_BUDGET, GOOGLE_WALLET_HEADERS } from "./api";
 import type { ChunkVisit, PageVisit } from "./api";
 import type { DownloadPayload } from "./ryanair";
 
@@ -438,4 +438,101 @@ describe("Boarding pass chunking", () => {
     // The third chunk was never asked for.
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
+
+  it("should halve a failed chunk and keep the passes of the ids that work", async () => {
+    // Only booking 3 is refused; the other five must not pay for it.
+    const mockFetch = vi.fn().mockImplementation(async (_url, init: RequestInit) => {
+      const bookingIds: number[] = JSON.parse(init.body as string).bookingIds;
+      return bookingIds.includes(3)
+        ? { ok: false, status: 500 }
+        : { ok: true, status: 200, json: async () => bookingIds.map((id) => ({ pnr: `P${id}` })) };
+    });
+    const visits: ChunkVisit[] = [];
+
+    const passes = await fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: ids(12), xAuthToken: "token" },
+      MOCK_URL,
+      mockFetch as any,
+      (visit) => visits.push(visit),
+      6
+    );
+
+    // Every booking but the one Ryanair refuses.
+    expect(passes).toHaveLength(11);
+    expect(passes.map((pass) => (pass as { pnr: string }).pnr)).not.toContain("P3");
+    // Halved down to the single booking that fails, and no further.
+    expect(postedIds(mockFetch)).toEqual([
+      [1, 2, 3, 4, 5, 6], [1, 2, 3], [1, 2], [3], [4, 5, 6], [7, 8, 9, 10, 11, 12],
+    ]);
+    const failures = visits.filter((visit) => visit.error);
+    expect(failures.map((visit) => visit.bookingIds)).toEqual([6, 3, 1]);
+  });
+
+  it("should report the single booking that failed, so diagnostics can name it", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+    const visits: ChunkVisit[] = [];
+
+    await fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: [1, 2], xAuthToken: "token" },
+      MOCK_URL,
+      mockFetch as any,
+      (visit) => visits.push(visit),
+      2
+    );
+
+    expect(visits.map((visit) => visit.bookingIds)).toEqual([2, 1, 1]);
+    expect(visits.every((visit) => visit.error?.includes("boardingpasses failed: 500"))).toBe(true);
+  });
+
+  it("should cap the requests an endpoint that fails for everything can cost", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+    const visits: ChunkVisit[] = [];
+
+    const passes = await fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: ids(40), xAuthToken: "token" },
+      MOCK_URL,
+      mockFetch as any,
+      (visit) => visits.push(visit),
+      20
+    );
+
+    // Two chunks, four requests each, rather than a request per booking.
+    expect(passes).toEqual([]);
+    expect(mockFetch).toHaveBeenCalledTimes(2 * BOARDING_PASS_REQUEST_BUDGET);
+    expect(visits.filter((visit) => visit.error?.includes("gave up"))).toHaveLength(1);
+  });
+
+  it("should still give up on a 403 in the middle of a bisection", async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({ ok: false, status: 403 });
+
+    await expect(fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: [1, 2, 3, 4], xAuthToken: null },
+      MOCK_URL,
+      mockFetch as any,
+      undefined,
+      4
+    )).rejects.toThrow("LOGIN_REQUIRED");
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("should keep the customer id out of the error it reports", async () => {
+    const customerId = "cust-0d41d8cd98f0";
+    const mockFetch = vi.fn().mockRejectedValue(
+      new Error(`NetworkError fetching https://api/orders/${customerId}/passes`)
+    );
+    const visits: ChunkVisit[] = [];
+
+    await fetchBoardingPassesInChunks(
+      { customerId, bookingIds: [1], xAuthToken: "token" },
+      MOCK_URL,
+      mockFetch as any,
+      (visit) => visits.push(visit)
+    );
+
+    expect(visits[0].error).toBe("NetworkError fetching https://api/orders/<cid>/passes");
+  });
 });
+

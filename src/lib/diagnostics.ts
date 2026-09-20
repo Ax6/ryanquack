@@ -8,8 +8,15 @@
  * Nothing here touches a browser API: the background passes the environment in
  * and persists the result, which keeps every helper unit-testable.
  */
-import type { BoardingPass, FlightSummary, OrderResponse } from "./ryanair";
-import { flightsFromTripBooking, hasBarcode } from "./ryanair";
+import type { BoardingPass, FlightSummary, OrderResponse, TripBookingTrace } from "./ryanair";
+import {
+  UNPARSED_TRIP_BOOKING,
+  extractFlightsFromOrders,
+  hasBarcode,
+  hasMatchingPass,
+  indexPasses,
+  parseTripBookings,
+} from "./ryanair";
 
 /** `browser.storage.local` key. One report, overwritten by every fetch. */
 export const DIAGNOSTICS_STORAGE_KEY = "diagnostics";
@@ -69,44 +76,113 @@ export function createHasher(salt: string): Hasher {
 /** Objects deep. Deeper than anything Ryanair sends, and a hard stop for the rest. */
 export const SKELETON_MAX_DEPTH = 8;
 
-/**
- * The shape of a response with every value removed: keys survive, primitives
- * become their type (strings keep only their length), and an array becomes its
- * first element plus a count. This is what tells us whether a reporter's
- * `journeys[].segments[]` looks like the one we guessed at.
- */
-export function skeleton(value: unknown, maxDepth: number = SKELETON_MAX_DEPTH): unknown {
-  return shapeOf(value, maxDepth, new Set());
+/** Longer than any field name Ryanair uses, so anything longer is a value. */
+const MAX_KEY_LENGTH = 40;
+/** A key that reads as an identifier: a record locator, or a numeric id. */
+const IDENTIFIER_KEY = [/^[A-Z0-9]{6}$/, /^\d{4,}$/];
+
+/** This endpoint is undocumented, so a map keyed by pnr has to be assumed possible. */
+function maskKey(key: string): string {
+  return key.length > MAX_KEY_LENGTH || IDENTIFIER_KEY.some((pattern) => pattern.test(key))
+    ? "<id>"
+    : key;
 }
 
-/** `path` holds the ancestors of `value`, so a body that points at itself terminates. */
-function shapeOf(value: unknown, depth: number, path: Set<unknown>): unknown {
-  if (value === null) return "null";
+/**
+ * The shape of a response with every value removed: keys survive and primitives
+ * become their type. String lengths go with the strings — a name's length is the
+ * passenger's business, and the boarding pass skeleton would otherwise carry one
+ * per passenger.
+ *
+ * The elements of an array are described together rather than sampled, and each
+ * key says how many of them carried it (`bookingId: "number ×90/135"`). Sampling
+ * element zero would hide exactly the heterogeneity we are looking for: a
+ * listing that parses for nine bookings in ten looks perfect from the first one.
+ */
+export function skeleton(value: unknown, maxDepth: number = SKELETON_MAX_DEPTH): unknown {
+  return shapeOf([value], maxDepth, new Set());
+}
 
-  if (typeof value !== "object") {
+/** `path` holds the ancestors of `values`, so a body that points at itself terminates. */
+function shapeOf(values: unknown[], depth: number, path: Set<unknown>): unknown {
+  const tokens = new Set<string>();
+  const records: Array<Record<string, unknown>> = [];
+  const arrays: unknown[][] = [];
+
+  for (const value of values) {
+    if (value === null) tokens.add("null");
     // number, boolean, undefined, bigint, symbol, function.
-    return typeof value === "string" ? `string(${value.length})` : typeof value;
+    else if (typeof value !== "object") tokens.add(typeof value);
+    else if (path.has(value)) tokens.add("…circular");
+    else if (Array.isArray(value)) arrays.push(value);
+    else records.push(value as Record<string, unknown>);
   }
 
-  if (path.has(value)) return "…circular";
+  if (records.length === 0 && arrays.length === 0) return [...tokens].join("|");
   if (depth <= 0) return "…";
 
-  path.add(value);
+  const structured = [...records, ...arrays];
+  for (const value of structured) path.add(value);
   try {
     // An array costs no depth: `flights[0]` is the same level as `flights`, and
     // charging for both would cut the nesting we are here to look at in half.
-    if (Array.isArray(value)) {
-      return value.length === 0 ? [] : [shapeOf(value[0], depth, path), `…×${value.length}`];
-    }
-
-    const shape: Record<string, unknown> = {};
-    for (const [key, inner] of Object.entries(value)) {
-      shape[key] = shapeOf(inner, depth - 1, path);
-    }
-    return shape;
+    // Objects win a level that holds both: their keys are what we came to read.
+    return records.length === 0
+      ? arrayShape(arrays, depth, path)
+      : recordShape(records, values.length, depth, path);
   } finally {
-    path.delete(value);
+    for (const value of structured) path.delete(value);
   }
+}
+
+/** Sibling arrays are described as one, so every element is accounted for. */
+function arrayShape(arrays: unknown[][], depth: number, path: Set<unknown>): unknown {
+  const elements = arrays.flat();
+  if (elements.length === 0) return [];
+
+  const lengths = arrays.map((array) => array.length);
+  const shortest = Math.min(...lengths);
+  const longest = Math.max(...lengths);
+
+  return [
+    shapeOf(elements, depth, path),
+    `…×${shortest === longest ? longest : `${shortest}–${longest}`}`,
+  ];
+}
+
+/**
+ * The union of the keys across `records`, each carrying how many of the `total`
+ * values had it. A key missing from half the elements is the whole finding, so
+ * it is on the type where the shape is a leaf and on the key where it is not.
+ */
+function recordShape(
+  records: Array<Record<string, unknown>>,
+  total: number,
+  depth: number,
+  path: Set<unknown>
+): Record<string, unknown> {
+  const byKey = new Map<string, unknown[]>();
+  for (const record of records) {
+    for (const [key, value] of Object.entries(record)) {
+      const masked = maskKey(key);
+      const seen = byKey.get(masked);
+      if (seen) seen.push(value);
+      else byKey.set(masked, [value]);
+    }
+  }
+
+  const shape: Record<string, unknown> = {};
+  for (const [key, values] of byKey) {
+    const inner = shapeOf(values, depth - 1, path);
+    // One value describes itself; a fraction of one says nothing.
+    const presence = total > 1 ? ` ×${values.length}/${total}` : "";
+
+    if (!presence) shape[key] = inner;
+    else if (typeof inner === "string") shape[key] = `${inner}${presence}`;
+    else if (values.length === total) shape[key] = inner;
+    else shape[`${key}${presence}`] = inner;
+  }
+  return shape;
 }
 
 /* ------------------------------------------------------------------ *
@@ -155,13 +231,45 @@ function summarizeEndpoint(log: EndpointLog): EndpointReport {
 
 /* ------------------------------------------------------------------ *
  * Per-endpoint summaries
+ *
+ * Tallies first, rows second. An account with 135 bookings writes a row per
+ * booking three times over, which is more than a GitHub comment holds — and the
+ * rows say nothing the tallies do not, since every value on them is one of a
+ * handful of constants of ours. So the tallies count everything and the rows are
+ * kept as examples.
  * ------------------------------------------------------------------ */
 
-export interface DetailsLegSummary {
-  flightNumber: string;
-  origin: string;
-  destination: string;
-  departUTC: string;
+/** Example rows kept per section. */
+export const MAX_ENTRIES = 20;
+
+/**
+ * At most `MAX_ENTRIES` rows: the ones worth reading first, then the earliest of
+ * the rest. Kept in the order they arrived, so an index still means something.
+ */
+function retain<T>(
+  entries: T[],
+  interesting: (entry: T) => boolean
+): { kept: T[]; truncated: number } {
+  if (entries.length <= MAX_ENTRIES) return { kept: entries, truncated: 0 };
+
+  const chosen = new Set<number>();
+  entries.forEach((entry, index) => {
+    if (chosen.size < MAX_ENTRIES && interesting(entry)) chosen.add(index);
+  });
+  for (let index = 0; index < entries.length && chosen.size < MAX_ENTRIES; index++) {
+    chosen.add(index);
+  }
+
+  return {
+    kept: entries.filter((_, index) => chosen.has(index)),
+    truncated: entries.length - chosen.size,
+  };
+}
+
+/** One more of `key`. A key of null is a finding too: nothing we know of answered. */
+function tally(counts: Record<string, number>, key: string | null | undefined): void {
+  const name = key || "none";
+  counts[name] = (counts[name] ?? 0) + 1;
 }
 
 export interface DetailsItemSummary {
@@ -170,8 +278,16 @@ export interface DetailsItemSummary {
   bookingId: string;
   pnr: string;
   type: string;
-  flights: DetailsLegSummary[];
+  /** Legs Ryanair sent, and legs our own parser got a usable row out of. */
+  legs: number;
+  parsedLegs: number;
   checkins: string[];
+}
+
+/** Every item, counted. The rows below are examples; this is the whole listing. */
+export interface DetailsTally {
+  types: Record<string, number>;
+  checkins: Record<string, number>;
 }
 
 export interface DetailsSummary {
@@ -180,7 +296,10 @@ export interface DetailsSummary {
   distinctTripIds: number;
   distinctProductIds: number;
   distinctBookingIds: number;
+  tally: DetailsTally;
   entries: DetailsItemSummary[];
+  /** Rows the cap left out, so nobody reads `entries.length` as the real count. */
+  entriesTruncated: number;
 }
 
 function countDistinct(values: Array<string | number | undefined>): number {
@@ -193,7 +312,13 @@ export async function summarizeDetails(
 ): Promise<DetailsSummary> {
   const items = orders?.items ?? [];
 
-  const entries = await Promise.all(items.map(async (item): Promise<DetailsItemSummary> => {
+  const tallies: DetailsTally = { types: {}, checkins: {} };
+  for (const item of items) {
+    tally(tallies.types, item.type);
+    for (const checkin of item.rawBooking?.checkins ?? []) tally(tallies.checkins, checkin.status);
+  }
+
+  const all = await Promise.all(items.map(async (item): Promise<DetailsItemSummary> => {
     const raw = item.rawBooking;
     const bookingId = raw?.bookingId ?? item.payload?.booking?.bookingId;
     const pnr = raw?.recordLocator ?? item.payload?.booking?.pnr;
@@ -204,17 +329,17 @@ export async function summarizeDetails(
       bookingId: await hash(bookingId),
       pnr: await hash(pnr),
       type: item.type ?? "",
-      // Route and flight number are shared by everyone on the flight, so they
-      // identify the schema rather than the traveller.
-      flights: (raw?.flights ?? []).map((flight) => ({
-        flightNumber: flight.flightNumber ?? "",
-        origin: flight.origin ?? "",
-        destination: flight.destination ?? "",
-        departUTC: flight.times?.departUTC ?? "",
-      })),
+      legs: (raw?.flights ?? []).length,
+      // A leg the parser cannot read is the difference between what Ryanair sent
+      // and what the list shows, which is the only thing the report is here for.
+      parsedLegs: extractFlightsFromOrders({ items: [item] })
+        .filter((flight) => flight.date && flight.flightNumber).length,
       checkins: (raw?.checkins ?? []).map((checkin) => checkin.status ?? ""),
     };
   }));
+
+  // A leg we could not read is what the reader is looking for.
+  const { kept, truncated } = retain(all, (entry) => entry.legs !== entry.parsedLegs);
 
   return {
     items: items.length,
@@ -223,36 +348,87 @@ export async function summarizeDetails(
     distinctBookingIds: countDistinct(items.map(
       (item) => item.rawBooking?.bookingId ?? item.payload?.booking?.bookingId
     )),
-    entries,
+    tally: tallies,
+    entries: kept,
+    entriesTruncated: truncated,
   };
 }
 
-export interface TripsBookingSummary {
+/**
+ * What our own parser made of one booking: whether it found it at all, and which
+ * key it read each field out of. Every key is a constant of ours, so this
+ * describes the parser rather than the traveller.
+ */
+export interface TripsBookingSummary extends TripBookingTrace {
   bookingId: string;
   pnr: string;
-  origin: string;
-  destination: string;
   journeys: number;
   segments: number;
-  /** What our own parser made of the booking, so a miss is visible in the report. */
-  parsedFlightNumber: string;
-  parsedDate: string;
 }
 
 export interface TripsItemSummary {
   tripId: string;
-  startDate: string;
-  endDate: string;
   /** How many bookings the trip holds. Anything above 1 is what `/details` hides. */
   flights: number;
+  /** How many of them the parser found. The gap is the bug, when there is one. */
+  parsedBookings: number;
   bookings: TripsBookingSummary[];
+  bookingsTruncated: number;
+}
+
+/**
+ * Every booking of every trip, counted by the key each lookup answered on. This
+ * is the diagnosis in full: 90 ids under `bookingId` and 45 under `id` says what
+ * a listing of 135 rows would, in four lines.
+ */
+export interface TripsParseTally {
+  bookingIdKeys: Record<string, number>;
+  pnrKeys: Record<string, number>;
+  dateKeys: Record<string, number>;
+  flightNumberKeys: Record<string, number>;
+  routeKeys: Record<string, number>;
+  parsed: number;
+  unparsed: number;
+  /** Of the parsed: an id that was a number, and one written as digits. An
+   *  unparsed booking has no id at all, so it is in neither. */
+  numericBookingIds: number;
+  stringBookingIds: number;
 }
 
 export interface TripsSummary {
   items: number;
   distinctTripIds: number;
   totalBookings: number;
+  totalParsedBookings: number;
+  tally: TripsParseTally;
   entries: TripsItemSummary[];
+  /** Rows the cap left out, so nobody reads `entries.length` as the real count. */
+  entriesTruncated: number;
+}
+
+function tallyBookings(bookings: TripsBookingSummary[]): TripsParseTally {
+  const counts: TripsParseTally = {
+    bookingIdKeys: {}, pnrKeys: {}, dateKeys: {}, flightNumberKeys: {}, routeKeys: {},
+    parsed: 0, unparsed: 0, numericBookingIds: 0, stringBookingIds: 0,
+  };
+
+  for (const booking of bookings) {
+    tally(counts.bookingIdKeys, booking.bookingIdKey);
+    tally(counts.pnrKeys, booking.pnrKey);
+    tally(counts.dateKeys, booking.dateKey);
+    tally(counts.flightNumberKeys, booking.flightNumberKey);
+    tally(counts.routeKeys, booking.routeKey);
+
+    if (!booking.parsed) {
+      counts.unparsed++;
+      continue;
+    }
+    counts.parsed++;
+    if (booking.bookingIdNumeric) counts.numericBookingIds++;
+    else counts.stringBookingIds++;
+  }
+
+  return counts;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -274,42 +450,57 @@ function scalar(value: unknown): string {
 export async function summarizeTrips(trips: unknown[], hash: Hasher): Promise<TripsSummary> {
   const items = list(trips);
 
-  const entries = await Promise.all(items.map(async (item): Promise<TripsItemSummary> => {
+  const built = await Promise.all(items.map(async (item) => {
     const trip = record(item);
     const bookings = list(trip?.flights);
 
-    return {
-      tripId: await hash(scalar(trip?.tripId)),
-      startDate: scalar(trip?.startDate),
-      endDate: scalar(trip?.endDate),
-      flights: bookings.length,
-      bookings: await Promise.all(bookings.map(async (raw): Promise<TripsBookingSummary> => {
+    const rows = await Promise.all(bookings.map(async (raw): Promise<TripsBookingSummary> => {
         const booking = record(raw);
         const journeys = list(booking?.journeys);
-        const parsed = flightsFromTripBooking(raw)[0];
+        const [parsed] = parseTripBookings(raw);
+        const flight = parsed?.flights[0];
 
-        return {
-          bookingId: await hash(scalar(booking?.bookingId)),
-          pnr: await hash(scalar(booking?.pnr)),
-          origin: scalar(booking?.origin),
-          destination: scalar(booking?.destination),
-          journeys: journeys.length,
-          segments: journeys.reduce<number>(
-            (total, journey) => total + list(record(journey)?.segments).length,
-            0
-          ),
-          parsedFlightNumber: parsed?.flightNumber ?? "",
-          parsedDate: parsed?.date ?? "",
-        };
-      })),
+      return {
+        ...(parsed?.trace ?? UNPARSED_TRIP_BOOKING),
+        bookingId: await hash(flight ? String(flight.bookingId) : ""),
+        pnr: await hash(flight?.pnr ?? ""),
+        journeys: journeys.length,
+        segments: journeys.reduce<number>(
+          (total, journey) => total + list(record(journey)?.segments).length,
+          0
+        ),
+      };
+    }));
+
+    // A booking the parser could not read is the one worth showing.
+    const { kept, truncated } = retain(rows, (booking) => !booking.parsed);
+
+    return {
+      rows,
+      entry: {
+        tripId: await hash(scalar(trip?.tripId)),
+        flights: bookings.length,
+        // Harvested from the whole trip, so a listing that keeps its bookings
+        // somewhere other than `flights` is still counted here.
+        parsedBookings: parseTripBookings(item).length,
+        bookings: kept,
+        bookingsTruncated: truncated,
+      },
     };
   }));
+
+  const entries = built.map((trip) => trip.entry);
+  // A trip holding more than one booking is what `/details` hides, so show those.
+  const { kept, truncated } = retain(entries, (entry) => entry.flights > 1);
 
   return {
     items: items.length,
     distinctTripIds: countDistinct(items.map((item) => scalar(record(item)?.tripId))),
     totalBookings: entries.reduce((total, entry) => total + entry.flights, 0),
-    entries,
+    totalParsedBookings: entries.reduce((total, entry) => total + entry.parsedBookings, 0),
+    tally: tallyBookings(built.flatMap((trip) => trip.rows)),
+    entries: kept,
+    entriesTruncated: truncated,
   };
 }
 
@@ -329,16 +520,26 @@ export interface MergeSummary {
    * cannot be turned into passes.
    */
   unconfirmed: number;
+  /** Distinct bookings a returned pass could actually be matched to. */
+  bookingIdsWithPasses: number;
+  /**
+   * Bookings that are neither in the pass list nor the upcoming one. Zero by
+   * construction, and here to prove it: this is the count that was the bug.
+   */
+  renderedNowhere: number;
 }
 
 export function summarizeMerge(
   fromDetails: FlightSummary[],
   fromTrips: FlightSummary[],
   merged: FlightSummary[],
-  readyBookingIds: number[]
+  readyBookingIds: number[],
+  passes: BoardingPass[] = []
 ): MergeSummary {
   const detailIds = new Set(fromDetails.map((flight) => flight.bookingId));
   const tripIds = new Set(fromTrips.map((flight) => flight.bookingId));
+  const index = indexPasses(passes);
+  const matched = merged.filter((flight) => hasMatchingPass(flight, index));
 
   return {
     onlyInDetails: [...detailIds].filter((id) => !tripIds.has(id)).length,
@@ -350,32 +551,53 @@ export function summarizeMerge(
     unconfirmed: merged.filter(
       (flight) => flight.checkinStatus === "unknown" && !flight.isReady
     ).length,
+    bookingIdsWithPasses: new Set(matched.map((flight) => flight.bookingId)).size,
+    // Ready means "a pass will speak for it", so a ready flight with no pass is
+    // in neither list.
+    renderedNowhere: merged.filter(
+      (flight) => flight.isReady && !hasMatchingPass(flight, index)
+    ).length,
   };
 }
 
+/**
+ * A pass row says whether it arrived and whether it was scannable, and nothing
+ * else. The flight and the departure time used to be here, which made the report
+ * the reporter's itinerary written out a third time.
+ */
 export interface PassSummary {
   pnr: string;
-  flight: string;
-  departure: string;
   hasBarcode: boolean;
-  paxType: string;
+}
+
+export interface PassesSummary {
+  count: number;
+  /** One tally for the account instead of a passenger type per row. */
+  paxTypes: Record<string, number>;
+  entries: PassSummary[];
+  /** Rows the cap left out, so nobody reads `entries.length` as the real count. */
+  entriesTruncated: number;
 }
 
 export async function summarizePasses(
   passes: BoardingPass[],
   hash: Hasher
-): Promise<{ count: number; entries: PassSummary[] }> {
-  const entries = await Promise.all(passes.map(async (pass): Promise<PassSummary> => ({
+): Promise<PassesSummary> {
+  const paxTypes: Record<string, number> = {};
+  for (const pass of passes) {
+    const paxType = pass.paxType || "unknown";
+    paxTypes[paxType] = (paxTypes[paxType] ?? 0) + 1;
+  }
+
+  const all = await Promise.all(passes.map(async (pass): Promise<PassSummary> => ({
     pnr: await hash(pass.pnr),
-    // The label, never the passenger: a flight number is not personal.
-    flight: pass.flight?.label
-      || `${pass.flight?.carrierCode ?? ""}${pass.flight?.number ?? ""}`,
-    departure: pass.departure?.dateUTC || pass.departure?.date || "",
     hasBarcode: hasBarcode(pass),
-    paxType: pass.paxType ?? "",
   })));
 
-  return { count: passes.length, entries };
+  // A pass with no scannable code is the one worth showing.
+  const { kept, truncated } = retain(all, (entry) => !entry.hasBarcode);
+
+  return { count: passes.length, paxTypes, entries: kept, entriesTruncated: truncated };
 }
 
 /* ------------------------------------------------------------------ *
@@ -386,6 +608,41 @@ export interface DiagnosticEnvironment {
   extensionVersion: string;
   userAgent: string;
   target?: string;
+}
+
+/** Ordered: an Edge or Opera string also claims to be Chrome. */
+const BROWSERS: Array<[string, RegExp]> = [
+  ["Firefox", /Firefox\/(\d+)/],
+  ["Edge", /Edg(?:e|A|iOS)?\/(\d+)/],
+  ["Opera", /OPR\/(\d+)/],
+  ["Chrome", /Chrome\/(\d+)/],
+  ["Safari", /Version\/(\d+).*Safari/],
+];
+
+/** Ordered too: an iPhone is "like Mac OS X" and an Android is a Linux. */
+const SYSTEMS: Array<[string, RegExp]> = [
+  ["Android", /Android/],
+  ["iOS", /iPhone|iPad|iPod/],
+  ["ChromeOS", /CrOS/],
+  ["Windows", /Windows/],
+  ["macOS", /Macintosh|Mac OS X/],
+  ["Linux", /Linux/],
+];
+
+/**
+ * Browser, major version and OS family. Which bug a build has is all we ever act
+ * on; the rest of the string is a fingerprint, and the minor version is enough
+ * to single a reporter out.
+ */
+export function summarizeUserAgent(userAgent: string): string {
+  const browser = BROWSERS.find(([, pattern]) => pattern.test(userAgent));
+  const system = SYSTEMS.find(([, pattern]) => pattern.test(userAgent));
+
+  const name = browser
+    ? `${browser[0]} ${userAgent.match(browser[1])?.[1] ?? ""}`.trim()
+    : "unknown browser";
+
+  return system ? `${name} on ${system[0]}` : name;
 }
 
 export interface DiagnosticReport {
@@ -401,7 +658,7 @@ export interface DiagnosticReport {
   details: DetailsSummary;
   trips: TripsSummary;
   merge: MergeSummary;
-  passes: { count: number; entries: PassSummary[] };
+  passes: PassesSummary;
   /** First page of each response, with every value stripped out. */
   schema: {
     details?: unknown;
@@ -438,7 +695,7 @@ export async function buildDiagnosticReport(input: DiagnosticInput): Promise<Dia
   return {
     generatedAt: (input.now ?? new Date()).toISOString(),
     extensionVersion: input.environment.extensionVersion,
-    userAgent: input.environment.userAgent,
+    userAgent: summarizeUserAgent(input.environment.userAgent),
     ...(input.environment.target ? { target: input.environment.target } : {}),
     endpoints: {
       details: summarizeEndpoint(input.endpoints.details),
@@ -451,7 +708,8 @@ export async function buildDiagnosticReport(input: DiagnosticInput): Promise<Dia
       input.merge.fromDetails,
       input.merge.fromTrips,
       input.merge.merged,
-      input.merge.readyBookingIds
+      input.merge.readyBookingIds,
+      input.passes
     ),
     passes: await summarizePasses(input.passes, hash),
     schema: input.schema,

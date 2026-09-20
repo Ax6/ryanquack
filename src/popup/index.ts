@@ -1177,7 +1177,7 @@ function renderDiagnosticsControl() {
   button.id = "btn-copy-diagnostics";
   button.className = "btn-copy-diagnostics";
   button.textContent = "Copy diagnostic report";
-  button.title = "Copy an anonymised description of the last refresh, for a bug report";
+  button.title = "Copy a description of what Ryanair answered — counts and field names, no flight details";
   button.addEventListener("click", () => { void copyDiagnosticReport(); });
 
   bulkActionsEl.appendChild(button);

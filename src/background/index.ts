@@ -92,6 +92,9 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
   };
   const schema: { details?: unknown; trips?: unknown; boardingpasses?: unknown } = {};
 
+  /** A thrown url carries the customer id, and the report is meant to be postable. */
+  const reportableError = (error: unknown) => redactCustomerId(errorText(error), customerId);
+
   /** Logs the page and keeps a value-free skeleton of the first body it sees. */
   const recordPage = (log: EndpointLog, name: "details" | "trips") => (visit: PageVisit) => {
     if (log.requests.length === 0) schema[name] = skeleton(visit.body);
@@ -128,13 +131,13 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
         .then(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => {
-            endpoints.details.error = errorText(error);
+            endpoints.details.error = reportableError(error);
             return { ok: false as const, error };
           }
         ),
       fetchTrips(customerId, token, API_ORDERS_URL, fetch, recordPage(endpoints.trips, "trips"))
         .catch((error: unknown) => {
-          endpoints.trips.error = errorText(error);
+          endpoints.trips.error = reportableError(error);
           return { items: [] as unknown[] };
         }),
     ]);

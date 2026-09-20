@@ -137,8 +137,40 @@ function tripBooking(booking) {
 }
 
 /**
+ * The same booking in a shape nobody guessed at: the id under `id` and written
+ * as digits rather than a number, the locator under `recordLocator`, the legs a
+ * level deeper than `journeys[].segments[]`. The bookings the extension is
+ * missing are the ones it has never seen the shape of, so a mock that answers in
+ * the shape the parser looks for proves nothing about the bug it is here to
+ * catch. `linkedBookings` holds an id the harvest must not mistake for a booking
+ * of this trip.
+ */
+function hiddenTripBooking(booking) {
+  return {
+    id: String(booking.id),
+    recordLocator: booking.pnr,
+    passengers: [{ id: 1, first: "Ryan", last: "Quack" }],
+    itinerary: {
+      journeys: [{
+        journeyNum: 0,
+        sectors: [{
+          segments: [{
+            origin: booking.origin,
+            destination: booking.destination,
+            flightNumber: booking.flightNumber,
+            departureDateUTC: booking.departUTC,
+          }],
+        }],
+      }],
+    },
+    linkedBookings: [{ id: 424242, pnr: "NOTYRS" }],
+  };
+}
+
+/**
  * `GET /orders/v2/orders/{cid}` — what myRyanair itself lists. One item per trip,
- * with every booking of that trip in `flights`; the first trip carries seven.
+ * with every booking of that trip in `flights`; the first trip carries seven, one
+ * in the obvious shape and six in the unfamiliar one, so both paths are exercised.
  */
 function generateTrips(pCount, uCount) {
   const items = generateBookings(pCount, uCount).map((booking, index) => ({
@@ -146,7 +178,7 @@ function generateTrips(pCount, uCount) {
     startDate: booking.departUTC,
     endDate: booking.departUTC,
     flights: index === 0
-      ? [booking, ...hiddenBookingsFor(booking)].map(tripBooking)
+      ? [tripBooking(booking), ...hiddenBookingsFor(booking).map(hiddenTripBooking)]
       : [tripBooking(booking)],
     cars: [],
     rooms: [],
@@ -215,7 +247,7 @@ const server = createServer(async (req, res) => {
               Passes Count &ge; 2 includes a pass with no barcode.
               More than ${ORDERS_PAGE_SIZE} bookings in total are served in pages, so the extension has to follow nextToken.
               The first trip holds ${HIDDEN_BOOKINGS_PER_TRIP + 1} bookings on one flight, and only the first of them
-              appears in /details — the rest exist solely in the trip listing.
+              appears in /details — the rest exist solely in the trip listing, in a different shape from it.
             </p>
           </div>
           <div style="display: grid; gap: 10px; max-width: 300px;">
