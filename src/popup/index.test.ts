@@ -155,8 +155,8 @@ describe("diagnostic report dialog", () => {
     // An icon, so the words it stands for have to reach a screen reader and a hover.
     expect(link?.querySelector("svg")).not.toBeNull();
     expect(link?.textContent?.trim()).toBe("");
-    expect(link?.getAttribute("aria-label")).toBe("Missing a booking? Open the diagnostic report");
-    expect(link?.title).toBe("Missing a booking? Open the diagnostic report");
+    expect(link?.getAttribute("aria-label")).toBe("Quack a bug");
+    expect(link?.title).toContain("Quack a bug");
     expect(document.querySelector("#bulk-actions #btn-diagnostics")).toBeNull();
     // Nothing is fetched or shown until the link is clicked.
     expect(document.getElementById("diagnostics-dialog")).toBeNull();
@@ -179,7 +179,13 @@ describe("diagnostic report dialog", () => {
     const dialog = await openDialog();
     expect(dialog?.tagName).toBe("DIALOG");
     expect(dialog?.hasAttribute("open")).toBe(true);
-    expect(dialog?.querySelector(".diagnostics-title")?.textContent).toBe("Diagnostic report");
+    expect(dialog?.querySelector(".diagnostics-title")?.textContent).toBe("Quack a bug 🦆");
+
+    // Copying is half the job; the place to paste it has to be reachable from here.
+    const issues = document.getElementById("link-diagnostics-issues") as HTMLAnchorElement | null;
+    expect(issues?.href).toBe("https://github.com/Ax6/ryanquack/issues/new");
+    expect(issues?.target).toBe("_blank");
+    expect(issues?.rel).toBe("noopener noreferrer");
     expect(dialog?.querySelector(".diagnostics-note")?.textContent).toContain("no names, routes or dates");
     expect(document.getElementById("diagnostic-report")?.textContent).toBe(JSON_TEXT);
     // Reading the report is not copying it.

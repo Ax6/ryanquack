@@ -1202,7 +1202,10 @@ const DIAGNOSTICS_DIALOG_ID = "diagnostics-dialog";
 const DIAGNOSTICS_REPORT_ID = "diagnostic-report";
 
 const DIAGNOSTICS_NOTE =
-  "This is what Ryanair's API answered, as response counts and field names — it carries no names, routes or dates.";
+  "This is what Ryanair's API answered, as response counts and field names. It carries no names, routes or dates.";
+
+/** Where a copied report is meant to end up. */
+const ISSUES_URL = "https://github.com/Ax6/ryanquack/issues/new";
 
 const DIAGNOSTICS_EMPTY = "Nothing to report yet. Refresh the list first, then open this again.";
 
@@ -1231,7 +1234,7 @@ function buildDiagnosticsDialog(json: string | null): HTMLDialogElement {
 
   const title = document.createElement("h2");
   title.className = "diagnostics-title";
-  title.textContent = "Diagnostic report";
+  title.textContent = "Quack a bug 🦆";
 
   const note = document.createElement("p");
   note.className = "diagnostics-note";
@@ -1250,9 +1253,18 @@ function buildDiagnosticsDialog(json: string | null): HTMLDialogElement {
   close.textContent = "Close";
   close.addEventListener("click", () => closeDialog(dialog));
 
+  // Copying is only half the job, so the place to paste it is one click away.
+  const issues = document.createElement("a");
+  issues.id = "link-diagnostics-issues";
+  issues.className = "diagnostics-issues";
+  issues.href = ISSUES_URL;
+  issues.target = "_blank";
+  issues.rel = "noopener noreferrer";
+  issues.textContent = "Report on GitHub ↗";
+
   const actions = document.createElement("div");
   actions.className = "diagnostics-actions";
-  actions.append(copy, close);
+  actions.append(issues, copy, close);
 
   let body: HTMLElement;
   if (json === null) {
@@ -1365,8 +1377,8 @@ function renderDiagnosticsControl() {
   button.className = "btn-diagnostics";
   // Static markup, no interpolation: the icon is a constant in this file.
   button.innerHTML = LADYBIRD_SVG;
-  button.setAttribute("aria-label", "Missing a booking? Open the diagnostic report");
-  button.title = "Missing a booking? Open the diagnostic report";
+  button.setAttribute("aria-label", "Quack a bug");
+  button.title = "Quack a bug: copy a diagnostic report and open an issue";
   button.addEventListener("click", () => { void openDiagnosticsDialog(); });
 
   header.appendChild(button);

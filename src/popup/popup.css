@@ -517,9 +517,26 @@ body.view-tab .btn-diagnostics {
 
 .diagnostics-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   padding: 14px 16px 16px;
+}
+
+/* Sits opposite the buttons: a way out, not a thing to press by accident. */
+.diagnostics-issues {
+  margin-right: auto;
+  color: #073590;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.8;
+}
+
+.diagnostics-issues:hover,
+.diagnostics-issues:focus-visible {
+  opacity: 1;
 }
 
 .diagnostics-actions button {
