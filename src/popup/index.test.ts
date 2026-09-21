@@ -146,15 +146,13 @@ describe("diagnostic report dialog", () => {
     return document.getElementById("diagnostics-dialog");
   }
 
-  it("should offer a quiet header icon in the tab view, not a button among the actions", async () => {
+  it("should offer a quiet header link in the tab view, not a button among the actions", async () => {
     await load("?view=tab");
 
     const link = document.getElementById("btn-diagnostics");
     expect(link).not.toBeNull();
     expect(link?.parentElement?.className).toContain("app-header");
-    // An icon, so the words it stands for have to reach a screen reader and a hover.
-    expect(link?.querySelector("svg")).not.toBeNull();
-    expect(link?.textContent?.trim()).toBe("");
+    expect(link?.textContent).toBe("Quack a bug");
     expect(link?.getAttribute("aria-label")).toBe("Quack a bug");
     expect(link?.title).toContain("Quack a bug");
     expect(document.querySelector("#bulk-actions #btn-diagnostics")).toBeNull();
