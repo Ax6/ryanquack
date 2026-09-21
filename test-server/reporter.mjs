@@ -255,6 +255,24 @@ export function reporterAccount({ now = Date.now(), withFailure = false } = {}) 
   return { bookings, items };
 }
 
+/**
+ * A plain account with a chosen number of checked-in and upcoming bookings, one
+ * passenger each, in the same shape as the reporter's. The knobs on the mock
+ * dashboard, for looking at the popup with two passes or twenty.
+ */
+export function customAccount({ passes = 1, upcoming = 1, now = Date.now() } = {}) {
+  const random = rng(3);
+  const plan = [];
+  for (let i = 0; i < passes; i++) {
+    plan.push({ key: `P${i}`, pax: 1, legs: [{ depart: now + (i + 1) * 6 * HOUR, statuses: ["checkin"] }] });
+  }
+  for (let i = 0; i < upcoming; i++) {
+    plan.push({ key: `U${i}`, pax: 1, legs: [{ depart: now + (i + 2) * DAY + 9 * HOUR, statuses: ["nocheckin"] }] });
+  }
+  const bookings = plan.map((spec, index) => buildBooking(spec, index, now, random));
+  return { bookings, items: bookings.map((booking) => booking.item) };
+}
+
 /** Passes for the requested ids: one per passenger who has checked in, nothing for the rest. */
 export function reporterPasses(account, requestedIds) {
   const wanted = new Set(requestedIds.map(Number));
