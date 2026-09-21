@@ -101,8 +101,9 @@ describe("print tab refresh", () => {
   });
 });
 
-describe("diagnostic report button", () => {
+describe("diagnostic report dialog", () => {
   const REPORT = { generatedAt: "2026-09-20T12:00:00.000Z", list: { bookings: 128, flights: 138 } };
+  const JSON_TEXT = JSON.stringify(REPORT, null, 2);
 
   let writeText: ReturnType<typeof vi.fn>;
 
@@ -116,6 +117,7 @@ describe("diagnostic report button", () => {
     vi.resetModules();
     vi.resetAllMocks();
     document.body.innerHTML = `
+      <div class="app-header"><div class="header-title"><span>RyanQuack</span></div></div>
       <div id="bulk-actions"></div><div id="search-bar"></div>
       <div id="passes"></div>
       <div id="status-bar"><div id="progress"></div><div id="progress-fill"></div>
@@ -137,58 +139,90 @@ describe("diagnostic report button", () => {
     await settle();
   }
 
-  it("should offer an icon in the status bar in the tab view, not a button among the actions", async () => {
+  /** Opens the dialog the way a user does, and hands back what it is showing. */
+  async function openDialog() {
+    document.getElementById("btn-diagnostics")?.click();
+    await settle();
+    return document.getElementById("diagnostics-dialog");
+  }
+
+  it("should offer a quiet header link in the tab view, not a button among the actions", async () => {
     await load("?view=tab");
 
-    const button = document.getElementById("btn-copy-diagnostics");
-    expect(button).not.toBeNull();
-    expect(button?.parentElement?.id).toBe("status-bar");
-    expect(button?.getAttribute("aria-label")).toBe("Copy diagnostic report");
-    expect(button?.title).toContain("No flight details");
-    expect(document.querySelector("#bulk-actions #btn-copy-diagnostics")).toBeNull();
+    const link = document.getElementById("btn-diagnostics");
+    expect(link).not.toBeNull();
+    expect(link?.parentElement?.className).toContain("app-header");
+    expect(link?.textContent).toBe("Diagnostics");
+    expect(link?.getAttribute("aria-label")).toBe("Open the diagnostic report");
+    expect(link?.title).toContain("No flight details");
+    expect(document.querySelector("#bulk-actions #btn-diagnostics")).toBeNull();
+    // Nothing is fetched or shown until the link is clicked.
+    expect(document.getElementById("diagnostics-dialog")).toBeNull();
+    expect(mocks.sendMessage).not.toHaveBeenCalledWith({ type: "RYQ_GET_DIAGNOSTICS" });
   });
 
   it("should leave the popup view without one", async () => {
     await load("?");
 
-    expect(document.getElementById("btn-copy-diagnostics")).toBeNull();
+    expect(document.getElementById("btn-diagnostics")).toBeNull();
+    expect(document.getElementById("diagnostics-dialog")).toBeNull();
+    // The popup keeps its own header link.
+    expect(document.getElementById("btn-open-tab")).not.toBeNull();
     expect(document.querySelectorAll(".pass")).toHaveLength(1);
   });
 
-  it("should copy the report and show exactly what was copied", async () => {
+  it("should show the exact report on open and copy it on demand", async () => {
     await load("?view=tab");
-    document.getElementById("btn-copy-diagnostics")?.click();
+
+    const dialog = await openDialog();
+    expect(dialog?.tagName).toBe("DIALOG");
+    expect(dialog?.hasAttribute("open")).toBe(true);
+    expect(dialog?.querySelector(".diagnostics-title")?.textContent).toBe("Diagnostic report");
+    expect(dialog?.querySelector(".diagnostics-note")?.textContent).toContain("no names, routes or dates");
+    expect(document.getElementById("diagnostic-report")?.textContent).toBe(JSON_TEXT);
+    // Reading the report is not copying it.
+    expect(writeText).not.toHaveBeenCalled();
+
+    const copy = document.getElementById("btn-copy-diagnostics") as HTMLButtonElement;
+    copy.click();
     await settle();
 
-    const json = JSON.stringify(REPORT, null, 2);
-    expect(writeText).toHaveBeenCalledWith(json);
+    expect(writeText).toHaveBeenCalledWith(JSON_TEXT);
+    expect(copy.textContent).toBe("Copied ✓");
     expect(document.getElementById("status")?.textContent).toBe("Diagnostic report copied");
+  });
 
-    const details = document.getElementById("diagnostic-report");
-    expect(details?.tagName).toBe("DETAILS");
-    expect(details?.parentElement?.id).toBe("status-bar");
-    expect(details?.querySelector("summary")?.textContent).toBe("Report contents");
-    expect(details?.querySelector("pre")?.textContent).toBe(json);
+  it("should close on the Close button", async () => {
+    await load("?view=tab");
+    const dialog = await openDialog();
+
+    document.getElementById("btn-close-diagnostics")?.click();
+    expect(dialog?.hasAttribute("open")).toBe(false);
   });
 
   it("should ask for a refresh when nothing has been fetched yet", async () => {
     respond(null);
     await load("?view=tab");
-    document.getElementById("btn-copy-diagnostics")?.click();
-    await settle();
 
+    const dialog = await openDialog();
     expect(writeText).not.toHaveBeenCalled();
     expect(document.getElementById("diagnostic-report")).toBeNull();
-    expect(document.getElementById("status")?.textContent).toBe("Refresh first, then copy the report");
+    expect(dialog?.querySelector(".diagnostics-empty")?.textContent).toContain("Refresh the list first");
+    expect((document.getElementById("btn-copy-diagnostics") as HTMLButtonElement).disabled).toBe(true);
+    expect(document.getElementById("status")?.textContent).toBe("Refresh first, then open the report");
   });
 
-  it("should leave the report on screen when the clipboard refuses it", async () => {
+  it("should leave the report readable when the clipboard refuses it", async () => {
     writeText.mockRejectedValue(new Error("Denied"));
     await load("?view=tab");
+
+    const dialog = await openDialog();
     document.getElementById("btn-copy-diagnostics")?.click();
     await settle();
 
-    expect(document.getElementById("diagnostic-report")).not.toBeNull();
+    expect(document.getElementById("diagnostic-report")?.textContent).toBe(JSON_TEXT);
+    expect(dialog?.hasAttribute("open")).toBe(true);
+    expect(dialog?.querySelector(".diagnostics-error")?.textContent).toContain("copy it by hand");
     expect(document.getElementById("status")?.textContent).toContain("Could not copy the report");
   });
 });

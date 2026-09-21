@@ -362,14 +362,16 @@ button:disabled {
 }
 
 /* ------------------------------------------------------------------ *
- * "Open in tab" header control
+ * Header text links — "Open in tab" (popup) and "Diagnostics" (tab view).
+ * Only ever one of the two, so they share the top-right slot.
  * ------------------------------------------------------------------ */
 
 .app-header {
   position: relative;
 }
 
-.btn-open-tab {
+.btn-open-tab,
+.btn-diagnostics {
   position: absolute;
   top: 10px;
   right: 12px;
@@ -388,8 +390,16 @@ button:disabled {
   opacity: 0.85;
 }
 
-.btn-open-tab:hover {
+.btn-open-tab:hover,
+.btn-diagnostics:hover,
+.btn-diagnostics:focus-visible {
   opacity: 1;
+}
+
+/* The tab view's header carries the centring gutter as padding; the link has to
+   follow it or it drifts off to the window edge. */
+body.view-tab .btn-diagnostics {
+  right: max(12px, calc((100% - 720px) / 2));
 }
 
 /* ------------------------------------------------------------------ *
@@ -407,54 +417,96 @@ button:disabled {
   min-width: 0;
 }
 
-/* A small icon in the corner of the status bar, tab view only. */
-.btn-copy-diagnostics {
-  position: absolute;
-  right: 12px;
-  bottom: 10px;
-  width: auto;
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.45;
+.btn-print-all {
+  background: #ffffff;
+  color: #073590;
+  border-color: #073590;
 }
 
-.btn-copy-diagnostics:hover,
-.btn-copy-diagnostics:focus-visible {
-  opacity: 1;
-  background: rgba(7, 53, 144, 0.08);
+/* ------------------------------------------------------------------ *
+ * Diagnostic report dialog — opened from the header link, tab view only
+ * ------------------------------------------------------------------ */
+
+.diagnostics-dialog {
+  width: min(600px, calc(100vw - 48px));
+  padding: 0;
+  border: 1px solid #2b2b2b;
+  border-radius: 6px;
+  background: #f6f1e7;
+  color: #2b2b2b;
+  box-shadow: 0 12px 32px rgba(7, 53, 144, 0.35);
 }
 
-/* The revealed report sits above the count line. */
-.diagnostic-report {
+.diagnostics-dialog::backdrop {
+  background: rgba(7, 53, 144, 0.55);
+}
+
+.diagnostics-title {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid #2b2b2b;
+  background: #073590;
+  color: #f6c453;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.diagnostics-note {
+  margin: 0;
+  padding: 12px 16px 10px;
   font-size: 12px;
-  margin-bottom: 8px;
-  text-align: left;
+  line-height: 1.5;
+  opacity: 0.8;
 }
 
-.diagnostic-report summary {
-  cursor: pointer;
-}
-
-.diagnostic-report pre {
-  margin: 6px 0 0;
-  padding: 8px;
-  max-height: 260px;
+.diagnostic-report {
+  margin: 0 16px;
+  padding: 10px;
+  max-height: 44vh;
   overflow: auto;
   border: 1px solid #2b2b2b;
+  border-radius: 4px;
   background: #ffffff;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
-  line-height: 1.4;
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
 }
 
-.btn-print-all {
+/* Nothing fetched yet: the same slot, carrying the reason instead. */
+.diagnostics-empty {
+  margin: 0 16px;
+  padding: 12px;
+  border: 1px dashed rgba(43, 43, 43, 0.4);
+  border-radius: 4px;
+  background: #ffffff;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diagnostics-error {
+  margin: 8px 16px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #9b1c1c;
+}
+
+.diagnostics-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+
+.diagnostics-actions button {
+  width: auto;
+  padding: 8px 18px;
+  font-size: 12px;
+}
+
+.btn-close-diagnostics {
   background: #ffffff;
   color: #073590;
   border-color: #073590;

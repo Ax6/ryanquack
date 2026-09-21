@@ -26,7 +26,6 @@ const progressEl = document.getElementById("progress") as HTMLElement;
 const progressFillEl = document.getElementById("progress-fill") as HTMLElement;
 const failuresEl = document.getElementById("failures") as HTMLElement;
 const summaryEl = document.getElementById("summary") as HTMLElement | null;
-const statusBarEl = document.getElementById("status-bar") as HTMLElement | null;
 
 /** Rows, passes and upcoming flights together, before a search box is worth the space. */
 const SEARCH_MIN_ROWS = 4;
@@ -1199,68 +1198,150 @@ function renderOpenInTabControl() {
  * Diagnostic report (tab view only)
  * ------------------------------------------------------------------ */
 
-const DIAGNOSTICS_DETAILS_ID = "diagnostic-report";
+const DIAGNOSTICS_DIALOG_ID = "diagnostics-dialog";
+const DIAGNOSTICS_REPORT_ID = "diagnostic-report";
 
-/** Shows the exact text that was copied, so nobody has to take our word for it. */
-function revealDiagnosticReport(json: string) {
-  document.getElementById(DIAGNOSTICS_DETAILS_ID)?.remove();
+const DIAGNOSTICS_NOTE =
+  "This is what Ryanair's API answered, as response counts and field names — it carries no names, routes or dates.";
 
-  const details = document.createElement("details");
-  details.id = DIAGNOSTICS_DETAILS_ID;
-  details.className = "diagnostic-report";
+const DIAGNOSTICS_EMPTY = "Nothing to report yet. Refresh the list first, then open this again.";
 
-  const summary = document.createElement("summary");
-  summary.textContent = "Report contents";
-
-  const pre = document.createElement("pre");
-  pre.textContent = json;
-
-  details.append(summary, pre);
-  (statusBarEl ?? bulkActionsEl).prepend(details);
+/** happy-dom and pre-2022 engines ship <dialog> without the modal methods. */
+function showDialog(dialog: HTMLDialogElement) {
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
 }
 
-async function copyDiagnosticReport() {
+function closeDialog(dialog: HTMLDialogElement) {
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+/**
+ * Built from scratch on every open, so a previous run's "Copied ✓" never greets
+ * the next one. A null report means nothing has been fetched yet: then there is
+ * something to read but nothing to copy.
+ */
+function buildDiagnosticsDialog(json: string | null): HTMLDialogElement {
+  document.getElementById(DIAGNOSTICS_DIALOG_ID)?.remove();
+
+  const dialog = document.createElement("dialog");
+  dialog.id = DIAGNOSTICS_DIALOG_ID;
+  dialog.className = "diagnostics-dialog";
+
+  const title = document.createElement("h2");
+  title.className = "diagnostics-title";
+  title.textContent = "Diagnostic report";
+
+  const note = document.createElement("p");
+  note.className = "diagnostics-note";
+  note.textContent = DIAGNOSTICS_NOTE;
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.id = "btn-copy-diagnostics";
+  copy.className = "btn-copy-diagnostics";
+  copy.textContent = "Copy";
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.id = "btn-close-diagnostics";
+  close.className = "btn-close-diagnostics";
+  close.textContent = "Close";
+  close.addEventListener("click", () => closeDialog(dialog));
+
+  const actions = document.createElement("div");
+  actions.className = "diagnostics-actions";
+  actions.append(copy, close);
+
+  let body: HTMLElement;
+  if (json === null) {
+    body = document.createElement("p");
+    body.className = "diagnostics-empty";
+    body.textContent = DIAGNOSTICS_EMPTY;
+    copy.disabled = true;
+  } else {
+    body = document.createElement("pre");
+    body.id = DIAGNOSTICS_REPORT_ID;
+    body.className = "diagnostic-report";
+    // Focusable, so the block can be scrolled and selected without a mouse.
+    body.tabIndex = 0;
+    body.textContent = json;
+    copy.addEventListener("click", () => { void copyDiagnosticReport(json, copy, dialog); });
+  }
+
+  dialog.append(title, note, body, actions);
+  document.body.appendChild(dialog);
+  return dialog;
+}
+
+/**
+ * The JSON is already on screen and selectable by the time this runs, so a
+ * clipboard the browser refuses costs a manual selection and nothing more.
+ */
+async function copyDiagnosticReport(json: string, button: HTMLButtonElement, dialog: HTMLDialogElement) {
+  try {
+    await navigator.clipboard.writeText(json);
+    button.textContent = "Copied ✓";
+    setStatus("Diagnostic report copied");
+  } catch (error) {
+    button.textContent = "Copy";
+
+    let warning = dialog.querySelector<HTMLElement>(".diagnostics-error");
+    if (!warning) {
+      warning = document.createElement("p");
+      warning.className = "diagnostics-error";
+      warning.setAttribute("role", "alert");
+      dialog.insertBefore(warning, dialog.querySelector(".diagnostics-actions"));
+    }
+    warning.textContent = "The clipboard refused the copy. Select the text above and copy it by hand.";
+
+    setStatus(`Could not copy the report: ${errorText(error)}`);
+  }
+}
+
+/** Fetched as the dialog opens, so the report is read before it is copied. */
+async function openDiagnosticsDialog() {
   try {
     const report = (await browser.runtime.sendMessage<RyqMessage, DiagnosticReport | null>({
       type: "RYQ_GET_DIAGNOSTICS",
     })) as DiagnosticReport | null | undefined;
 
     if (!report) {
-      setStatus("Refresh first, then copy the report");
+      setStatus("Refresh first, then open the report");
+      showDialog(buildDiagnosticsDialog(null));
       return;
     }
 
-    const json = JSON.stringify(report, null, 2);
-    // Revealed before the copy: a clipboard the browser refuses still leaves the
-    // user something they can select by hand.
-    revealDiagnosticReport(json);
-
-    await navigator.clipboard.writeText(json);
-    setStatus("Diagnostic report copied");
+    showDialog(buildDiagnosticsDialog(JSON.stringify(report, null, 2)));
   } catch (error) {
-    setStatus(`Could not copy the report: ${errorText(error)}`);
+    setStatus(`Could not read the report: ${errorText(error)}`);
   }
 }
 
 /**
- * The report describes what Ryanair answered, which is only ever needed when
- * something is missing from the list. So: an icon in the corner of the status
- * bar, in the tab view only, and nothing in the popup.
+ * The report is only ever wanted when something is missing from the list, so it
+ * hides behind the same quiet header link the popup spends on "Open in tab" —
+ * and only in the tab view, where that slot is free.
  */
 function renderDiagnosticsControl() {
   if (!isTabView()) return;
-  document.getElementById("btn-copy-diagnostics")?.remove();
+
+  const header = document.querySelector(".app-header");
+  if (!header) return;
+
+  document.getElementById("btn-diagnostics")?.remove();
 
   const button = document.createElement("button");
   button.type = "button";
-  button.id = "btn-copy-diagnostics";
-  button.className = "btn-copy-diagnostics";
-  button.textContent = "🩺";
-  button.setAttribute("aria-label", "Copy diagnostic report");
-  button.title = "Copy diagnostic report: what Ryanair answered, as counts and field names. No flight details.";
-  button.addEventListener("click", () => { void copyDiagnosticReport(); });
+  button.id = "btn-diagnostics";
+  button.className = "btn-diagnostics";
+  button.textContent = "Diagnostics";
+  button.setAttribute("aria-label", "Open the diagnostic report");
+  button.title = "What Ryanair answered, as counts and field names. No flight details.";
+  button.addEventListener("click", () => { void openDiagnosticsDialog(); });
 
-  (statusBarEl ?? bulkActionsEl).appendChild(button);
+  header.appendChild(button);
 }
 
 /* ------------------------------------------------------------------ *
