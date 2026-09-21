@@ -184,7 +184,8 @@ describe("diagnostic report dialog", () => {
     expect(issues?.href).toBe("https://github.com/Ax6/ryanquack/issues/new");
     expect(issues?.target).toBe("_blank");
     expect(issues?.rel).toBe("noopener noreferrer");
-    expect(dialog?.querySelector(".diagnostics-note")?.textContent).toContain("no names, routes or dates");
+    expect(dialog?.querySelector(".diagnostics-note")?.textContent)
+      .toBe("Diagnostic dump to help track down the bug. No personal information is included.");
     expect(document.getElementById("diagnostic-report")?.textContent).toBe(JSON_TEXT);
     // Reading the report is not copying it.
     expect(writeText).not.toHaveBeenCalled();

@@ -1202,7 +1202,7 @@ const DIAGNOSTICS_DIALOG_ID = "diagnostics-dialog";
 const DIAGNOSTICS_REPORT_ID = "diagnostic-report";
 
 const DIAGNOSTICS_NOTE =
-  "This is what Ryanair's API answered, as response counts and field names. It carries no names, routes or dates.";
+  "Diagnostic dump to help track down the bug. No personal information is included.";
 
 /** Where a copied report is meant to end up. */
 const ISSUES_URL = "https://github.com/Ax6/ryanquack/issues/new";
