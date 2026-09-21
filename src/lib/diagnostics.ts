@@ -1,21 +1,22 @@
 /**
  * A report the user can paste into a GitHub issue without handing over their
- * travel plans. Ryanair's listings disagree about how many bookings an account
- * has, and the only way to tell which shape a reporter is actually getting is to
- * see it — so this describes the responses (counts, keys, types) and never
- * carries a value that identifies anyone.
+ * travel plans. The only way to tell what shape a reporter's account actually
+ * gets back from Ryanair is to see it — so this describes the responses
+ * (counts, keys, types) and never carries a value that identifies anyone.
  *
  * Nothing here touches a browser API: the background passes the environment in
  * and persists the result, which keeps every helper unit-testable.
  */
-import type { BoardingPass, FlightSummary, OrderResponse, TripBookingTrace } from "./ryanair";
+import type { BoardingPass, BookingSource, FlightSummary, OrderResponse } from "./ryanair";
 import {
-  UNPARSED_TRIP_BOOKING,
+  bookingSource,
+  classifyLeg,
+  countBookings,
   extractFlightsFromOrders,
   hasBarcode,
   hasMatchingPass,
   indexPasses,
-  parseTripBookings,
+  legStatuses,
 } from "./ryanair";
 
 /** `browser.storage.local` key. One report, overwritten by every fetch. */
@@ -278,8 +279,11 @@ export interface DetailsItemSummary {
   bookingId: string;
   pnr: string;
   type: string;
-  /** Legs Ryanair sent, and legs our own parser got a usable row out of. */
+  /** Where the flights were read from: `rawBooking`, or `payload` when Ryanair failed to load it. */
+  source: BookingSource;
+  /** Legs Ryanair sent, legs that have already flown, and legs the list shows. */
   legs: number;
+  flownLegs: number;
   parsedLegs: number;
   checkins: string[];
 }
@@ -288,11 +292,14 @@ export interface DetailsItemSummary {
 export interface DetailsTally {
   types: Record<string, number>;
   checkins: Record<string, number>;
+  sources: Record<string, number>;
+  processingStatuses: Record<string, number>;
+  /** Items Ryanair itself could not load the booking for. */
+  rawBookingFailures: number;
 }
 
 export interface DetailsSummary {
   items: number;
-  /** A trip id shared by several items is the bug we are chasing, so count them. */
   distinctTripIds: number;
   distinctProductIds: number;
   distinctBookingIds: number;
@@ -312,9 +319,14 @@ export async function summarizeDetails(
 ): Promise<DetailsSummary> {
   const items = orders?.items ?? [];
 
-  const tallies: DetailsTally = { types: {}, checkins: {} };
+  const tallies: DetailsTally = {
+    types: {}, checkins: {}, sources: {}, processingStatuses: {}, rawBookingFailures: 0,
+  };
   for (const item of items) {
     tally(tallies.types, item.type);
+    tally(tallies.sources, bookingSource(item));
+    tally(tallies.processingStatuses, item.processingStatus?.code);
+    if (item.rawBookingFailure != null) tallies.rawBookingFailures++;
     for (const checkin of item.rawBooking?.checkins ?? []) tally(tallies.checkins, checkin.status);
   }
 
@@ -322,6 +334,7 @@ export async function summarizeDetails(
     const raw = item.rawBooking;
     const bookingId = raw?.bookingId ?? item.payload?.booking?.bookingId;
     const pnr = raw?.recordLocator ?? item.payload?.booking?.pnr;
+    const legs = raw?.flights ?? [];
 
     return {
       tripId: await hash(item.tripId),
@@ -329,7 +342,11 @@ export async function summarizeDetails(
       bookingId: await hash(bookingId),
       pnr: await hash(pnr),
       type: item.type ?? "",
-      legs: (raw?.flights ?? []).length,
+      source: bookingSource(item),
+      legs: legs.length,
+      flownLegs: raw
+        ? legs.filter((leg) => classifyLeg(legStatuses(raw, leg.journeyNum)).flown).length
+        : 0,
       // A leg the parser cannot read is the difference between what Ryanair sent
       // and what the list shows, which is the only thing the report is here for.
       parsedLegs: extractFlightsFromOrders({ items: [item] })
@@ -338,8 +355,10 @@ export async function summarizeDetails(
     };
   }));
 
-  // A leg we could not read is what the reader is looking for.
-  const { kept, truncated } = retain(all, (entry) => entry.legs !== entry.parsedLegs);
+  // A leg we could not read, or a booking read from the fallback, is what the
+  // reader is looking for.
+  const { kept, truncated } = retain(all, (entry) =>
+    entry.source !== "rawBooking" || entry.legs !== entry.flownLegs + entry.parsedLegs);
 
   return {
     items: items.length,
@@ -354,209 +373,52 @@ export async function summarizeDetails(
   };
 }
 
-/**
- * What our own parser made of one booking: whether it found it at all, and which
- * key it read each field out of. Every key is a constant of ours, so this
- * describes the parser rather than the traveller.
- */
-export interface TripsBookingSummary extends TripBookingTrace {
-  bookingId: string;
-  pnr: string;
-  journeys: number;
-  segments: number;
-}
+/* ------------------------------------------------------------------ *
+ * The list the popup shows
+ * ------------------------------------------------------------------ */
 
-export interface TripsItemSummary {
-  tripId: string;
-  /** How many bookings the trip holds. Anything above 1 is what `/details` hides. */
+/**
+ * The listing after it has been reconciled against the passes. These are the
+ * numbers the popup's count line is built from, so a reporter's "it shows N"
+ * can be checked against them.
+ */
+export interface ListSummary {
+  /** Distinct bookings, and legs of them still to fly. */
+  bookings: number;
   flights: number;
-  /** How many of them the parser found. The gap is the bug, when there is one. */
-  parsedBookings: number;
-  bookings: TripsBookingSummary[];
-  bookingsTruncated: number;
-}
-
-/**
- * Every booking of every trip, counted by the key each lookup answered on. This
- * is the diagnosis in full: 90 ids under `bookingId` and 45 under `id` says what
- * a listing of 135 rows would, in four lines.
- */
-export interface TripsParseTally {
-  bookingIdKeys: Record<string, number>;
-  pnrKeys: Record<string, number>;
-  dateKeys: Record<string, number>;
-  flightNumberKeys: Record<string, number>;
-  routeKeys: Record<string, number>;
-  parsed: number;
-  unparsed: number;
-  /** Of the parsed: an id that was a number, and one written as digits. An
-   *  unparsed booking has no id at all, so it is in neither. */
-  numericBookingIds: number;
-  stringBookingIds: number;
-}
-
-export interface TripsSummary {
-  items: number;
-  distinctTripIds: number;
-  totalBookings: number;
-  totalParsedBookings: number;
-  tally: TripsParseTally;
-  entries: TripsItemSummary[];
-  /** Rows the cap left out, so nobody reads `entries.length` as the real count. */
-  entriesTruncated: number;
-}
-
-function tallyBookings(bookings: TripsBookingSummary[]): TripsParseTally {
-  const counts: TripsParseTally = {
-    bookingIdKeys: {}, pnrKeys: {}, dateKeys: {}, flightNumberKeys: {}, routeKeys: {},
-    parsed: 0, unparsed: 0, numericBookingIds: 0, stringBookingIds: 0,
-  };
-
-  for (const booking of bookings) {
-    tally(counts.bookingIdKeys, booking.bookingIdKey);
-    tally(counts.pnrKeys, booking.pnrKey);
-    tally(counts.dateKeys, booking.dateKey);
-    tally(counts.flightNumberKeys, booking.flightNumberKey);
-    tally(counts.routeKeys, booking.routeKey);
-
-    if (!booking.parsed) {
-      counts.unparsed++;
-      continue;
-    }
-    counts.parsed++;
-    if (booking.bookingIdNumeric) counts.numericBookingIds++;
-    else counts.stringBookingIds++;
-  }
-
-  return counts;
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function list(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function scalar(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return "";
-}
-
-export async function summarizeTrips(trips: unknown[], hash: Hasher): Promise<TripsSummary> {
-  const items = list(trips);
-
-  const built = await Promise.all(items.map(async (item) => {
-    const trip = record(item);
-    const bookings = list(trip?.flights);
-
-    const rows = await Promise.all(bookings.map(async (raw): Promise<TripsBookingSummary> => {
-        const booking = record(raw);
-        const journeys = list(booking?.journeys);
-        const [parsed] = parseTripBookings(raw);
-        const flight = parsed?.flights[0];
-
-      return {
-        ...(parsed?.trace ?? UNPARSED_TRIP_BOOKING),
-        bookingId: await hash(flight ? String(flight.bookingId) : ""),
-        pnr: await hash(flight?.pnr ?? ""),
-        journeys: journeys.length,
-        segments: journeys.reduce<number>(
-          (total, journey) => total + list(record(journey)?.segments).length,
-          0
-        ),
-      };
-    }));
-
-    // A booking the parser could not read is the one worth showing.
-    const { kept, truncated } = retain(rows, (booking) => !booking.parsed);
-
-    return {
-      rows,
-      entry: {
-        tripId: await hash(scalar(trip?.tripId)),
-        flights: bookings.length,
-        // Harvested from the whole trip, so a listing that keeps its bookings
-        // somewhere other than `flights` is still counted here.
-        parsedBookings: parseTripBookings(item).length,
-        bookings: kept,
-        bookingsTruncated: truncated,
-      },
-    };
-  }));
-
-  const entries = built.map((trip) => trip.entry);
-  // A trip holding more than one booking is what `/details` hides, so show those.
-  const { kept, truncated } = retain(entries, (entry) => entry.flights > 1);
-
-  return {
-    items: items.length,
-    distinctTripIds: countDistinct(items.map((item) => scalar(record(item)?.tripId))),
-    totalBookings: entries.reduce((total, entry) => total + entry.flights, 0),
-    totalParsedBookings: entries.reduce((total, entry) => total + entry.parsedBookings, 0),
-    tally: tallyBookings(built.flatMap((trip) => trip.rows)),
-    entries: kept,
-    entriesTruncated: truncated,
-  };
-}
-
-export interface MergeSummary {
-  /** Distinct booking ids, which is what the two listings actually disagree about. */
-  onlyInDetails: number;
-  onlyInTrips: number;
-  inBoth: number;
-  /** Rows after the merge and the reconcile, and how many of them are ready. */
-  total: number;
+  /** Legs shown through a pass rather than as an upcoming row. */
   ready: number;
-  /** Distinct ids passes were actually asked for, before the reconcile. */
+  upcoming: number;
+  /** Bookings the pass endpoint was asked about, and how many it answered for. */
   readyBookingIds: number;
-  /**
-   * Trip-listing bookings the reconcile moved to upcoming because no pass came
-   * back for them. A high count means the listing is handing us bookings that
-   * cannot be turned into passes.
-   */
-  unconfirmed: number;
-  /** Distinct bookings a returned pass could actually be matched to. */
   bookingIdsWithPasses: number;
-  /**
-   * Bookings that are neither in the pass list nor the upcoming one. Zero by
-   * construction, and here to prove it: this is the count that was the bug.
-   */
+  /** A ready flight with no pass is in neither list. Must be zero. */
   renderedNowhere: number;
+  /** Legs by check-in state, as the popup labels them. */
+  statuses: Record<string, number>;
 }
 
-export function summarizeMerge(
-  fromDetails: FlightSummary[],
-  fromTrips: FlightSummary[],
-  merged: FlightSummary[],
+export function summarizeList(
+  flights: FlightSummary[],
   readyBookingIds: number[],
   passes: BoardingPass[] = []
-): MergeSummary {
-  const detailIds = new Set(fromDetails.map((flight) => flight.bookingId));
-  const tripIds = new Set(fromTrips.map((flight) => flight.bookingId));
+): ListSummary {
   const index = indexPasses(passes);
-  const matched = merged.filter((flight) => hasMatchingPass(flight, index));
+  const matched = flights.filter((flight) => hasMatchingPass(flight, index));
+  const statuses: Record<string, number> = {};
+  for (const flight of flights) tally(statuses, flight.checkinStatus);
 
   return {
-    onlyInDetails: [...detailIds].filter((id) => !tripIds.has(id)).length,
-    onlyInTrips: [...tripIds].filter((id) => !detailIds.has(id)).length,
-    inBoth: [...detailIds].filter((id) => tripIds.has(id)).length,
-    total: merged.length,
-    ready: merged.filter((flight) => flight.isReady).length,
+    bookings: countBookings(flights),
+    flights: flights.length,
+    ready: flights.filter((flight) => flight.isReady).length,
+    upcoming: flights.filter((flight) => !flight.isReady).length,
     readyBookingIds: readyBookingIds.length,
-    unconfirmed: merged.filter(
-      (flight) => flight.checkinStatus === "unknown" && !flight.isReady
-    ).length,
     bookingIdsWithPasses: new Set(matched.map((flight) => flight.bookingId)).size,
-    // Ready means "a pass will speak for it", so a ready flight with no pass is
-    // in neither list.
-    renderedNowhere: merged.filter(
+    renderedNowhere: flights.filter(
       (flight) => flight.isReady && !hasMatchingPass(flight, index)
     ).length,
+    statuses,
   };
 }
 
@@ -652,17 +514,14 @@ export interface DiagnosticReport {
   target?: string;
   endpoints: {
     details: EndpointReport;
-    trips: EndpointReport;
     boardingpasses: EndpointReport;
   };
   details: DetailsSummary;
-  trips: TripsSummary;
-  merge: MergeSummary;
+  list: ListSummary;
   passes: PassesSummary;
   /** First page of each response, with every value stripped out. */
   schema: {
     details?: unknown;
-    trips?: unknown;
     boardingpasses?: unknown;
   };
 }
@@ -671,19 +530,16 @@ export interface DiagnosticInput {
   environment: DiagnosticEnvironment;
   endpoints: {
     details: EndpointLog;
-    trips: EndpointLog;
     boardingpasses: EndpointLog;
   };
   orders: OrderResponse | null;
-  trips: unknown[];
-  merge: {
-    fromDetails: FlightSummary[];
-    fromTrips: FlightSummary[];
-    merged: FlightSummary[];
+  list: {
+    /** The flights after `markUnconfirmedFlights`, which is what the popup gets. */
+    flights: FlightSummary[];
     readyBookingIds: number[];
   };
   passes: BoardingPass[];
-  schema: { details?: unknown; trips?: unknown; boardingpasses?: unknown };
+  schema: { details?: unknown; boardingpasses?: unknown };
   /** Fixed by tests; a fresh random salt otherwise. */
   salt?: string;
   now?: Date;
@@ -699,18 +555,10 @@ export async function buildDiagnosticReport(input: DiagnosticInput): Promise<Dia
     ...(input.environment.target ? { target: input.environment.target } : {}),
     endpoints: {
       details: summarizeEndpoint(input.endpoints.details),
-      trips: summarizeEndpoint(input.endpoints.trips),
       boardingpasses: summarizeEndpoint(input.endpoints.boardingpasses),
     },
     details: await summarizeDetails(input.orders, hash),
-    trips: await summarizeTrips(input.trips, hash),
-    merge: summarizeMerge(
-      input.merge.fromDetails,
-      input.merge.fromTrips,
-      input.merge.merged,
-      input.merge.readyBookingIds,
-      input.passes
-    ),
+    list: summarizeList(input.list.flights, input.list.readyBookingIds, input.passes),
     passes: await summarizePasses(input.passes, hash),
     schema: input.schema,
   };

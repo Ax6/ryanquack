@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, extractFlightsFromTrips, hasMatchingPass, indexPasses, markUnconfirmedFlights, mergeFlights, parseTripBookings, sortFlightsByDeparture, sortPassesByDeparture, buildPassBaseName, buildPassFilename, hasBarcode } from "./ryanair";
+import { isInfant, buildDownloadPayload, decodeCustomerId, filterReadyBookings, extractFlightsFromOrders, bookingSource, classifyLeg, countBookings, hasMatchingPass, indexPasses, markUnconfirmedFlights, sortFlightsByDeparture, sortPassesByDeparture, buildPassBaseName, buildPassFilename, hasBarcode } from "./ryanair";
+import type { OrderItem } from "./ryanair";
 import type { BoardingPass, FlightSummary } from "./ryanair";
 
 /**
@@ -72,7 +73,7 @@ describe("Ryanair Logic", () => {
               { journeyNum: 1, origin: "STN", destination: "DUB", flightNumber: "FR2", times: { departUTC: "2023-01-05T10:00:00Z" } }
             ],
             checkins: [
-              { journeyNum: 0, status: "checkedin" },
+              { journeyNum: 0, status: "checkin" },
               { journeyNum: 1, status: "nocheckin" }
             ]
           }
@@ -82,23 +83,23 @@ describe("Ryanair Logic", () => {
 
     const summaries = extractFlightsFromOrders(mockOrders as any);
     expect(summaries).toHaveLength(2);
-    
+
     // Outbound
-    expect(summaries[0]).toMatchObject({ 
-      bookingId: 101, 
-      pnr: "PNR1", 
+    expect(summaries[0]).toMatchObject({
+      bookingId: 101,
+      pnr: "PNR1",
       flightNumber: "FR1",
-      checkinStatus: "checkedin", 
-      isReady: true 
+      checkinStatus: "checkin",
+      isReady: true
     });
 
     // Return
-    expect(summaries[1]).toMatchObject({ 
-      bookingId: 101, 
-      pnr: "PNR1", 
+    expect(summaries[1]).toMatchObject({
+      bookingId: 101,
+      pnr: "PNR1",
       flightNumber: "FR2",
-      checkinStatus: "nocheckin", 
-      isReady: false 
+      checkinStatus: "nocheckin",
+      isReady: false
     });
   });
 
@@ -113,7 +114,7 @@ describe("Ryanair Logic", () => {
     expect(readyIds).toEqual([102, 103]);
   });
 
-  it("should extract check-in window times", () => {
+  it("should extract check-in window times, including the free window and bought seats", () => {
     const mockOrders = {
       items: [
         {
@@ -121,30 +122,172 @@ describe("Ryanair Logic", () => {
             bookingId: 200,
             recordLocator: "PNR2",
             flights: [
-              { 
-                journeyNum: 0, 
-                origin: "BER", 
-                destination: "MAD", 
-                flightNumber: "FR99", 
+              {
+                journeyNum: 0,
+                origin: "BER",
+                destination: "MAD",
+                flightNumber: "FR99",
                 times: { departUTC: "2026-06-01T10:00:00Z" },
-                checkInOpenUTC: "2026-05-01T10:00:00Z",
+                checkInOpenUTC: "2026-04-02T10:00:00Z",
+                checkInFreeAllocateOpenUtcDate: "2026-05-31T10:00:00Z",
                 checkInCloseUTC: "2026-06-01T08:00:00Z"
+              },
+              {
+                journeyNum: 1,
+                origin: "MAD",
+                destination: "BER",
+                flightNumber: "FR98",
+                times: { departUTC: "2026-06-08T10:00:00Z" },
               }
             ],
             checkins: [
-              { journeyNum: 0, status: "nocheckin" }
-            ]
+              { journeyNum: 0, status: "nocheckin", paxNum: 0, segmentNum: 0 },
+              { journeyNum: 1, status: "nocheckin", paxNum: 0, segmentNum: 0 }
+            ],
+            seats: [{ journeyNum: 1, paxNum: 0, segmentNum: 0, code: "12A" }],
           }
         }
       ]
     };
 
-    const summaries = extractFlightsFromOrders(mockOrders as any);
-    expect(summaries[0]).toMatchObject({
+    const [outbound, inbound] = extractFlightsFromOrders(mockOrders as any);
+    expect(outbound).toMatchObject({
       checkinStatus: "nocheckin",
-      checkInOpenUTC: "2026-05-01T10:00:00Z",
-      checkInCloseUTC: "2026-06-01T08:00:00Z"
+      checkInOpenUTC: "2026-04-02T10:00:00Z",
+      checkInFreeOpenUTC: "2026-05-31T10:00:00Z",
+      checkInCloseUTC: "2026-06-01T08:00:00Z",
+      hasSeat: false,
     });
+    expect(inbound).toMatchObject({ checkinStatus: "nocheckin", hasSeat: true });
+    expect(inbound.checkInFreeOpenUTC).toBeUndefined();
+  });
+
+  it("should count distinct bookings behind the legs", () => {
+    expect(countBookings([
+      { bookingId: 1 }, { bookingId: 1 }, { bookingId: 2 },
+    ] as FlightSummary[])).toBe(2);
+    expect(countBookings([])).toBe(0);
+  });
+});
+
+describe("Check-in status of a leg", () => {
+  it("should say a leg nobody has done anything on is not checked in", () => {
+    expect(classifyLeg(["nocheckin"])).toEqual({ status: "nocheckin", ready: false, flown: false });
+    expect(classifyLeg(["nocheckin", "nocheckin", "nocheckin"]))
+      .toEqual({ status: "nocheckin", ready: false, flown: false });
+  });
+
+  it("should treat travel documents as not checked in, but still worth asking about", () => {
+    // Ryanair's first check-in step. It produces no boarding pass, which the
+    // reconcile discovers, so asking costs one request and never a booking.
+    expect(classifyLeg(["documentsadded"])).toEqual({ status: "documentsadded", ready: true, flown: false });
+    expect(classifyLeg(["nocheckin", "documentsadded", "nocheckin"]))
+      .toEqual({ status: "documentsadded", ready: true, flown: false });
+  });
+
+  it("should let the most advanced passenger decide", () => {
+    expect(classifyLeg(["nocheckin", "checkin", "documentsadded"]))
+      .toEqual({ status: "checkin", ready: true, flown: false });
+  });
+
+  it("should treat a status it has never seen as possibly holding a pass", () => {
+    expect(classifyLeg(["Boarded"])).toEqual({ status: "boarded", ready: true, flown: false });
+  });
+
+  it("should mark a leg every passenger has flown", () => {
+    expect(classifyLeg(["flown"])).toEqual({ status: "flown", ready: false, flown: true });
+    expect(classifyLeg(["flown", "flown"])).toEqual({ status: "flown", ready: false, flown: true });
+    // One passenger still to fly is a leg still to fly.
+    expect(classifyLeg(["flown", "nocheckin"])).toEqual({ status: "nocheckin", ready: false, flown: false });
+  });
+
+  it("should ask about a leg with no records at all rather than assume", () => {
+    expect(classifyLeg([])).toEqual({ status: "unknown", ready: true, flown: false });
+    expect(classifyLeg([null, undefined, ""])).toEqual({ status: "unknown", ready: true, flown: false });
+  });
+});
+
+describe("Reading the orders listing", () => {
+  const leg = (journeyNum: number, departUTC: string, flightNumber = `FR${journeyNum}`) => ({
+    journeyNum, origin: "STN", destination: "DUB", flightNumber, times: { departUTC },
+  });
+
+  it("should read every passenger's record for the leg, not the first one's", () => {
+    // A group of nine with documents added: the first record decided before,
+    // which hid six of a reporter's seven bookings on one flight.
+    const [flight] = extractFlightsFromOrders({ items: [{ rawBooking: {
+      bookingId: 1, recordLocator: "GROUP1",
+      flights: [leg(0, "2026-09-22T06:00:00Z")],
+      checkins: [
+        { journeyNum: 0, paxNum: 0, segmentNum: 0, status: "nocheckin" },
+        { journeyNum: 0, paxNum: 1, segmentNum: 0, status: "checkin" },
+      ],
+    } }] });
+
+    expect(flight).toMatchObject({ checkinStatus: "checkin", isReady: true });
+  });
+
+  it("should drop a leg that has flown and keep the one still to come", () => {
+    const flights = extractFlightsFromOrders({ items: [{ rawBooking: {
+      bookingId: 1, recordLocator: "RETURN",
+      flights: [leg(0, "2026-09-19T06:00:00Z"), leg(1, "2026-09-26T06:00:00Z")],
+      checkins: [
+        { journeyNum: 0, paxNum: 0, segmentNum: 0, status: "flown" },
+        { journeyNum: 1, paxNum: 0, segmentNum: 0, status: "documentsadded" },
+      ],
+    } }] });
+
+    expect(flights.map((flight) => flight.flightNumber)).toEqual(["FR1"]);
+    expect(flights[0]).toMatchObject({ checkinStatus: "documentsadded", isReady: true });
+  });
+
+  it("should read the booking out of the payload when Ryanair failed to load it", () => {
+    const item: OrderItem = {
+      tripId: "trip-1", productId: "1", type: "flight",
+      payload: { booking: {
+        bookingId: 4242, pnr: "PAYLD1", origin: "STN", destination: "DUB",
+        journeys: [
+          { segments: [
+            { origin: "STN", destination: "DUB", flightNumber: "FR1000", departureTime: "2026-09-22T06:00:00Z" },
+          ] },
+          { segments: [
+            { origin: "DUB", destination: "BER", flightNumber: "FR2000", departureTime: "2026-09-29T06:00:00Z" },
+            { origin: "BER", destination: "STN", flightNumber: "FR2001", departureTime: "2026-09-29T10:00:00Z" },
+          ] },
+        ],
+      } },
+      rawBookingFailure: { message: "timeout" },
+    };
+
+    const flights = extractFlightsFromOrders({ items: [item] });
+
+    expect(bookingSource(item)).toBe("payload");
+    expect(flights).toHaveLength(2);
+    expect(flights[0]).toMatchObject({
+      bookingId: 4242, pnr: "PAYLD1", origin: "STN", destination: "DUB",
+      flightNumber: "FR1000", date: "2026-09-22T06:00:00Z",
+      checkinStatus: "unknown", isReady: true,
+    });
+    // A connecting journey is one leg, from its first station to its last.
+    expect(flights[1]).toMatchObject({ origin: "DUB", destination: "STN", flightNumber: "FR2000" });
+  });
+
+  it("should prefer the raw booking when both are there", () => {
+    const item: OrderItem = {
+      payload: { booking: { bookingId: 1, pnr: "PAYLD1", journeys: [{ segments: [{ flightNumber: "WRONG" }] }] } },
+      rawBooking: { bookingId: 1, recordLocator: "RAW001", flights: [leg(0, "2026-09-22T06:00:00Z")], checkins: [] },
+    };
+
+    expect(bookingSource(item)).toBe("rawBooking");
+    expect(extractFlightsFromOrders({ items: [item] }).map((flight) => flight.pnr)).toEqual(["RAW001"]);
+  });
+
+  it("should say when an item holds nothing it can read", () => {
+    const item: OrderItem = { tripId: "trip-1", rawBookingFailure: "boom" };
+
+    expect(bookingSource(item)).toBe("none");
+    expect(extractFlightsFromOrders({ items: [item] })).toEqual([]);
+    expect(extractFlightsFromOrders({ items: [{ payload: { booking: { pnr: "NOID00", journeys: [] } } }] })).toEqual([]);
   });
 });
 
@@ -346,199 +489,7 @@ describe("Pass ordering", () => {
   });
 });
 
-describe("Trip listing", () => {
-  /** One trip holding `count` bookings on the same flight — issue #20 in miniature. */
-  function tripWith(count: number) {
-    return {
-      tripId: "trip-1",
-      startDate: "2026-09-22T06:00:00Z",
-      flights: Array.from({ length: count }, (_, i) => ({
-        bookingId: 5000 + i,
-        pnr: `GROUP${i}`,
-        origin: "STN",
-        destination: "DUB",
-        journeys: [{ segments: [{ flightNumber: "FR1000", departureDateUTC: "2026-09-22T06:00:00Z" }] }],
-      })),
-    };
-  }
-
-  it("should walk every booking of every trip, not just the first", () => {
-    const flights = extractFlightsFromTrips({ items: [tripWith(7)] });
-
-    expect(flights).toHaveLength(7);
-    expect(flights.map(f => f.bookingId)).toEqual([5000, 5001, 5002, 5003, 5004, 5005, 5006]);
-    expect(flights[0]).toMatchObject({
-      pnr: "GROUP0",
-      origin: "STN",
-      destination: "DUB",
-      flightNumber: "FR1000",
-      date: "2026-09-22T06:00:00Z",
-      checkinStatus: "unknown",
-      isReady: true,
-    });
-    expect(flights[0].checkInOpenUTC).toBeUndefined();
-  });
-
-  it("should accept the response object or its items", () => {
-    expect(extractFlightsFromTrips([tripWith(2)])).toHaveLength(2);
-    expect(extractFlightsFromTrips({ items: [tripWith(2)] })).toHaveLength(2);
-  });
-
-  it("should ignore trips that hold no flights", () => {
-    const flights = extractFlightsFromTrips({
-      items: [
-        { tripId: "cars-only", cars: [{ id: 1 }], rooms: [{ id: 2 }], events: [{ id: 3 }] },
-        { tripId: "not-an-array", flights: "nope" },
-        tripWith(1),
-      ],
-    });
-
-    expect(flights.map(f => f.bookingId)).toEqual([5000]);
-  });
-
-  it("should build one flight per segment, falling back to the journey and the booking", () => {
-    const flights = extractFlightsFromTrips({ items: [{
-      flights: [
-        {
-          bookingId: 1,
-          journeys: [
-            { segments: [{ flightNumber: "FR1" }, { flightNumber: "FR2" }] },
-            { segments: [{ flightNumber: "FR3" }] },
-          ],
-        },
-        { bookingId: 2, journeys: [{ flightNumber: "FR4", departureDate: "2026-01-01" }] },
-        { bookingId: 3, flightNumber: "FR5", startDate: "2026-02-02", passengers: [{ first: "Ryan" }] },
-      ],
-    }] });
-
-    expect(flights.map(f => `${f.bookingId}:${f.flightNumber}`))
-      .toEqual(["1:FR1", "1:FR2", "1:FR3", "2:FR4", "3:FR5"]);
-    expect(flights[3].date).toBe("2026-01-01");
-    expect(flights[4].date).toBe("2026-02-02");
-  });
-
-  it.each([
-    [{ flightNumber: "FR11" }, "FR11"],
-    [{ flightNo: "FR22" }, "FR22"],
-    [{ number: "33" }, "33"],
-    [{ carrierCode: "FR", number: "44" }, "FR44"],
-    [{ seat: "1A" }, ""],
-  ])("should read the flight number out of %o", (segment, expected) => {
-    const flights = extractFlightsFromTrips({ items: [{ flights: [{ bookingId: 1, journeys: [{ segments: [segment] }] }] }] });
-    expect(flights[0].flightNumber).toBe(expected);
-  });
-
-  it.each([
-    "departUTC", "departureUTC", "departureDateUTC", "departureDate", "depart", "departure", "startDate",
-  ])("should read the departure time out of %s", (key) => {
-    const flights = extractFlightsFromTrips({
-      items: [{ flights: [{ bookingId: 1, journeys: [{ segments: [{ [key]: "2026-03-03T08:00:00Z" }] }] }] }],
-    });
-    expect(flights[0].date).toBe("2026-03-03T08:00:00Z");
-  });
-
-  it("should leave the date empty rather than guess at an object", () => {
-    const flights = extractFlightsFromTrips({
-      items: [{ flights: [{ bookingId: 1, journeys: [{ segments: [{ departure: { code: "STN" } }] }] }] }],
-    });
-    expect(flights[0].date).toBe("");
-  });
-
-  it("should drop bookings with no usable id and keep their neighbours", () => {
-    const flights = extractFlightsFromTrips({
-      items: [{ flights: [
-        { pnr: "NOID12" },
-        { bookingId: "not-a-number", pnr: "BADID1" },
-        { bookingId: 0, pnr: "ZEROID" },
-        { bookingId: "77", pnr: "OKAY12" },
-      ] }],
-    });
-
-    expect(flights).toHaveLength(1);
-    expect(flights[0]).toMatchObject({ bookingId: 77, pnr: "OKAY12" });
-  });
-
-  it("should never throw on an odd shape", () => {
-    const hostile = { get flights() { throw new Error("boom"); } };
-
-    expect(() => extractFlightsFromTrips(null)).not.toThrow();
-    expect(() => extractFlightsFromTrips({ items: [null, 7, "x", []] })).not.toThrow();
-    expect(extractFlightsFromTrips({ items: [{ flights: [hostile, { bookingId: 5, passengers: [] }] }] }))
-      .toHaveLength(1);
-  });
-});
-
-describe("Merging the two listings", () => {
-  const flight = (fields: Partial<FlightSummary>): FlightSummary => ({
-    bookingId: 0, pnr: "", origin: "", destination: "", date: "",
-    flightNumber: "", checkinStatus: "unknown", isReady: true, ...fields,
-  });
-
-  it("should keep the details entry where both listings know the booking", () => {
-    const fromDetails = [flight({ bookingId: 1, checkinStatus: "checkedin", date: "2026-01-02T10:00:00Z" })];
-    const fromTrips = [flight({ bookingId: 1, checkinStatus: "unknown", date: "2026-01-02T10:00:00Z" })];
-
-    const merged = mergeFlights(fromDetails, fromTrips);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0].checkinStatus).toBe("checkedin");
-  });
-
-  it("should add the bookings only the trip listing knows about", () => {
-    const fromDetails = [flight({ bookingId: 1, date: "2026-01-03T10:00:00Z" })];
-    const fromTrips = [
-      flight({ bookingId: 1, date: "2026-01-03T10:00:00Z" }),
-      flight({ bookingId: 2, date: "2026-01-01T10:00:00Z" }),
-      flight({ bookingId: 3, date: "2026-01-02T10:00:00Z" }),
-    ];
-
-    expect(mergeFlights(fromDetails, fromTrips).map(f => f.bookingId)).toEqual([2, 3, 1]);
-  });
-
-  it("should keep every leg of a booking that has more than one", () => {
-    const fromDetails = [
-      flight({ bookingId: 1, flightNumber: "OUT", date: "2026-01-01T10:00:00Z" }),
-      flight({ bookingId: 1, flightNumber: "BACK", date: "2026-01-08T10:00:00Z" }),
-    ];
-
-    expect(mergeFlights(fromDetails, []).map(f => f.flightNumber)).toEqual(["OUT", "BACK"]);
-    expect(mergeFlights([], fromDetails)).toHaveLength(2);
-  });
-
-  it("should merge on the pnr when the two listings disagree about the id", () => {
-    // The trip listing is undocumented, so it is not known to share an id space
-    // with /details. Without the pnr the same booking would be listed twice.
-    const fromDetails = [flight({ bookingId: 1, pnr: "GROUP1", checkinStatus: "checkedin", date: "2026-01-02T10:00:00Z" })];
-    const fromTrips = [
-      flight({ bookingId: 88881, pnr: " group1 ", date: "2026-01-02T10:00:00Z" }),
-      flight({ bookingId: 88882, pnr: "GROUP2", date: "2026-01-03T10:00:00Z" }),
-    ];
-
-    const merged = mergeFlights(fromDetails, fromTrips);
-
-    expect(merged.map(f => f.bookingId)).toEqual([1, 88882]);
-    expect(merged[0].checkinStatus).toBe("checkedin");
-  });
-
-  it("should not merge two bookings that simply have no pnr", () => {
-    const fromDetails = [flight({ bookingId: 1, pnr: "", date: "2026-01-02T10:00:00Z" })];
-    const fromTrips = [flight({ bookingId: 2, pnr: "", date: "2026-01-03T10:00:00Z" })];
-
-    expect(mergeFlights(fromDetails, fromTrips).map(f => f.bookingId)).toEqual([1, 2]);
-  });
-
-  it("should leave the caller's arrays alone", () => {
-    const fromDetails = [flight({ bookingId: 2, date: "2026-02-01T10:00:00Z" })];
-    const fromTrips = [flight({ bookingId: 1, date: "2026-01-01T10:00:00Z" })];
-
-    mergeFlights(fromDetails, fromTrips);
-
-    expect(fromDetails.map(f => f.bookingId)).toEqual([2]);
-    expect(fromTrips.map(f => f.bookingId)).toEqual([1]);
-  });
-});
-
-describe("Reconciling trip-listing bookings against the passes", () => {
+describe("Reconciling the list against the passes", () => {
   const flight = (fields: Partial<FlightSummary>): FlightSummary => ({
     bookingId: 0, pnr: "", origin: "", destination: "", date: "",
     flightNumber: "", checkinStatus: "unknown", isReady: true, ...fields,
@@ -553,7 +504,7 @@ describe("Reconciling trip-listing bookings against the passes", () => {
       .every((f) => !f.isReady || hasMatchingPass(f, index));
   }
 
-  it("should move a trip-listing booking with no pass into the upcoming list", () => {
+  it("should move a booking with no pass into the upcoming list", () => {
     const flights = [flight({ bookingId: 9001, pnr: "GROUP1" })];
 
     const marked = markUnconfirmedFlights(flights, [pass({ pnr: "OTHER1" })]);
@@ -563,7 +514,7 @@ describe("Reconciling trip-listing bookings against the passes", () => {
     expect(flights[0].isReady).toBe(true);
   });
 
-  it("should leave a trip-listing booking that did produce a pass alone", () => {
+  it("should leave a booking that did produce a pass alone", () => {
     const marked = markUnconfirmedFlights(
       [flight({ bookingId: 9001, pnr: "GROUP1" })],
       [pass({ pnr: "group1" })]
@@ -644,147 +595,5 @@ describe("Reconciling trip-listing bookings against the passes", () => {
     ];
 
     expect(rendersSomewhere(flights, passes.map(pass))).toBe(true);
-  });
-});
-
-describe("Finding the bookings inside a trip", () => {
-  /** One trip, one booking, spelled however the caller likes. */
-  const tripOf = (booking: Record<string, unknown>) => ({ items: [{ flights: [booking] }] });
-
-  it.each([
-    ["id", { id: 4242, pnr: "GROUP1" }],
-    ["bookingId", { bookingId: 4242, pnr: "GROUP1" }],
-    ["bookingID", { bookingID: 4242, pnr: "GROUP1" }],
-    ["BookingId", { BookingId: 4242, pnr: "GROUP1" }],
-    ["bookingNumber", { bookingNumber: 4242, pnr: "GROUP1" }],
-    ["bookingRef", { bookingRef: 4242, pnr: "GROUP1" }],
-    ["bookingReference", { bookingReference: 4242, pnr: "GROUP1" }],
-    ["an id written as digits", { id: "4242", pnr: "GROUP1" }],
-    ["an id padded with zeroes", { id: "004242", pnr: "GROUP1" }],
-  ])("should read the booking id out of %s", (_name, booking) => {
-    expect(extractFlightsFromTrips(tripOf(booking)).map(f => f.bookingId)).toEqual([4242]);
-  });
-
-  it.each([
-    ["a record locator", { id: 4242, recordLocator: "GROUP1" }],
-    ["a reference", { id: 4242, bookingReferenceCode: "GROUP1" }],
-    ["journeys", { id: 4242, journeys: [] }],
-    ["segments", { id: 4242, segments: [] }],
-    ["legs", { id: 4242, legs: [] }],
-    ["passengers", { id: 4242, passengers: [] }],
-  ])("should accept a node corroborated by %s", (_name, booking) => {
-    expect(extractFlightsFromTrips(tripOf(booking))).toHaveLength(1);
-  });
-
-  it.each([
-    ["nothing but an id", { id: 4242 }],
-    ["a locator that is not one", { id: 4242, pnr: "NOT A PNR AT ALL" }],
-    ["journeys that are not an array", { id: 4242, journeys: "soon" }],
-    ["an id that is not a number", { id: "4242abc", pnr: "GROUP1" }],
-    ["a negative id", { id: -5, pnr: "GROUP1" }],
-    ["a fractional id", { id: 4242.5, pnr: "GROUP1" }],
-  ])("should refuse a node with %s", (_name, booking) => {
-    expect(extractFlightsFromTrips(tripOf(booking))).toEqual([]);
-  });
-
-  it("should not mistake a passenger or a linked booking for a booking of its own", () => {
-    const flights = extractFlightsFromTrips(tripOf({
-      id: "4242",
-      recordLocator: "GROUP1",
-      passengers: [{ id: 11, pnr: "PAXPNR" }, { id: 12, pnr: "PAXPN2" }],
-      linkedBookings: [{ bookingId: 777, pnr: "OTHER1", journeys: [] }],
-      journeys: [{ segments: [{ flightNumber: "FR1000", departUTC: "2026-09-22T06:00:00Z" }] }],
-    }));
-
-    expect(flights.map(f => f.bookingId)).toEqual([4242]);
-  });
-
-  it("should find a booking nested below the trip, and stop descending after that", () => {
-    const flights = extractFlightsFromTrips({ items: [{
-      tripId: "trip-1",
-      products: { flights: [{ booking: { id: 4242, recordLocator: "GROUP1" } }] },
-    }] });
-
-    expect(flights.map(f => f.bookingId)).toEqual([4242]);
-  });
-
-  it("should not walk past four object levels", () => {
-    const booking = { id: 4242, recordLocator: "GROUP1" };
-    const nest = (depth: number): unknown =>
-      depth === 0 ? booking : { inner: nest(depth - 1) };
-
-    // trip → inner → inner → inner → booking is four levels; one more is out of reach.
-    expect(extractFlightsFromTrips({ items: [nest(3)] })).toHaveLength(1);
-    expect(extractFlightsFromTrips({ items: [nest(4)] })).toEqual([]);
-  });
-
-  it("should weigh a bounded number of nodes per trip", () => {
-    const decoys = Array.from({ length: 100 }, (_, i) => ({ note: `decoy-${i}` }));
-    const booking = { id: 4242, recordLocator: "GROUP1" };
-
-    expect(extractFlightsFromTrips({ items: [{ flights: [...decoys, booking] }] })).toEqual([]);
-    expect(extractFlightsFromTrips({ items: [{ flights: [booking, ...decoys] }] })).toHaveLength(1);
-  });
-
-  it("should list a booking once however many times the trip repeats it", () => {
-    const booking = { id: 4242, recordLocator: "GROUP1", journeys: [] };
-
-    expect(extractFlightsFromTrips({ items: [{
-      flights: [booking, { ...booking }],
-      alsoFlights: [{ ...booking }],
-    }] })).toHaveLength(1);
-  });
-
-  it("should read the legs of a booking that nests them deeper than we guessed", () => {
-    const flights = extractFlightsFromTrips(tripOf({
-      id: "9001",
-      recordLocator: "GROUP1",
-      passengers: [{ id: 1 }],
-      itinerary: {
-        journeys: [{
-          journeyNum: 0,
-          sectors: [{ segments: [{
-            origin: "STN", destination: "DUB",
-            flightNumber: "FR1000", departureDateUTC: "2026-09-22T06:00:00Z",
-          }] }],
-        }],
-      },
-    }));
-
-    expect(flights).toHaveLength(1);
-    expect(flights[0]).toMatchObject({
-      bookingId: 9001,
-      pnr: "GROUP1",
-      origin: "STN",
-      destination: "DUB",
-      flightNumber: "FR1000",
-      date: "2026-09-22T06:00:00Z",
-      checkinStatus: "unknown",
-      isReady: true,
-    });
-  });
-
-  it("should report which key each field was read out of", () => {
-    const [parsed] = parseTripBookings({ flights: [{
-      id: "9001",
-      recordLocator: "GROUP1",
-      journeys: [{ segments: [{ originStation: "STN", flightNo: "FR1", departureUTC: "2026-09-22T06:00:00Z" }] }],
-    }] });
-
-    expect(parsed.trace).toEqual({
-      parsed: true,
-      bookingIdKey: "id",
-      bookingIdNumeric: false,
-      pnrKey: "recordLocator",
-      dateKey: "departureUTC",
-      flightNumberKey: "flightNo",
-      routeKey: "originStation",
-    });
-  });
-
-  it("should say a numeric id was numeric", () => {
-    const [parsed] = parseTripBookings({ flights: [{ bookingId: 9001, pnr: "GROUP1" }] });
-
-    expect(parsed.trace).toMatchObject({ bookingIdKey: "bookingId", bookingIdNumeric: true });
   });
 });

@@ -12,7 +12,7 @@ import browser from "webextension-polyfill";
 import { downloadPass, fetchGoogleWalletToken } from "../lib/api";
 import { mapWithConcurrency, retry } from "../lib/concurrency";
 import { errorStatus, errorText } from "../lib/errors";
-import { buildPassBaseName, buildPassFilename, hasBarcode } from "../lib/ryanair";
+import { buildPassBaseName, buildPassFilename, countBookings, hasBarcode } from "../lib/ryanair";
 import type { BoardingPass, DownloadPayload, FlightSummary } from "../lib/ryanair";
 import type { CachedPasses, DiagnosticReport, PassesResult, RyqMessage } from "../lib/messages";
 import { buildZip } from "../lib/zip";
@@ -25,6 +25,7 @@ const searchBarEl = document.getElementById("search-bar") as HTMLElement;
 const progressEl = document.getElementById("progress") as HTMLElement;
 const progressFillEl = document.getElementById("progress-fill") as HTMLElement;
 const failuresEl = document.getElementById("failures") as HTMLElement;
+const summaryEl = document.getElementById("summary") as HTMLElement | null;
 
 const SEARCH_MIN_PASSES = 4;
 
@@ -54,6 +55,34 @@ ensureBcMath();
 
 function setStatus(text: string) {
   statusEl.textContent = text;
+}
+
+function plural(count: number, noun: string, nouns = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : nouns}`;
+}
+
+/**
+ * How many bookings the list holds, in the terms a person counts in. A booking
+ * with two legs is two flights, and a checked-in leg is shown as its passes, so
+ * the three numbers do not add up to the rows on screen and are not meant to.
+ */
+function setSummary(flights: FlightSummary[], passes: BoardingPass[]) {
+  if (!summaryEl) return;
+
+  const bookings = countBookings(flights);
+  const upcoming = flights.filter((flight) => !flight.isReady).length;
+  if (bookings === 0 && passes.length === 0) {
+    summaryEl.hidden = true;
+    summaryEl.textContent = "";
+    return;
+  }
+
+  summaryEl.hidden = false;
+  summaryEl.textContent = [
+    plural(bookings, "booking"),
+    plural(upcoming, "upcoming flight"),
+    plural(passes.length, "boarding pass", "boarding passes"),
+  ].join(" · ");
 }
 
 function setProgress(done: number, total: number) {
@@ -899,7 +928,62 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
   });
 }
 
+function parseDate(value: string | undefined): Date | null {
+  const epoch = Date.parse(value ?? "");
+  return Number.isNaN(epoch) ? null : new Date(epoch);
+}
+
+function formatShortDateTime(date: Date): string {
+  const day = date.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
+  const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${day} ${time}`;
+}
+
+/**
+ * Whether check-in is open for this leg, and if not, when. Ryanair opens paid
+ * check-in weeks ahead but free check-in only shortly before the flight, and
+ * its own site says "open" for the paid window; a passenger without a seat is
+ * told the free one here instead.
+ */
+function checkinWindowLabel(flight: FlightSummary, now: Date): string {
+  const paid = parseDate(flight.checkInOpenUTC);
+  const free = parseDate(flight.checkInFreeOpenUTC);
+  const opens = flight.hasSeat ? paid : free ?? paid;
+  const closes = parseDate(flight.checkInCloseUTC);
+
+  if (closes && now > closes) return "Check-in closed";
+  if (!opens) return "Check-in not open";
+  if (now >= opens) return "Check-in open";
+  return `Check-in opens ${formatShortDateTime(opens)}`;
+}
+
+/** Ryanair's word for a status we have not seen, made readable. */
+function humanizeStatus(status: string): string {
+  const words = status.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase();
+}
+
+export function checkinLabel(flight: FlightSummary, now: Date = new Date()): string {
+  switch (flight.checkinStatus) {
+    case "nocheckin":
+      return checkinWindowLabel(flight, now);
+    case "documentsadded":
+      // Travel documents entered, which is the first half of Ryanair's check-in.
+      return `Documents added · ${checkinWindowLabel(flight, now)}`;
+    case "unknown":
+      // The listing said nothing about check-in; the raw word reads like a fault.
+      return "Check-in status unknown";
+    case "checkin":
+    case "checkedin":
+      return "Checked in";
+    default:
+      return humanizeStatus(flight.checkinStatus);
+  }
+}
+
 function renderFlights(flights: FlightSummary[]) {
+  const now = new Date();
+
   flights.forEach((flight) => {
     const row = document.createElement("div");
     row.className = "flight-summary";
@@ -916,24 +1000,7 @@ function renderFlights(flights: FlightSummary[]) {
     const meta = document.createElement("div");
     meta.className = "pass-meta";
     meta.style.marginTop = "2px";
-
-    if (flight.checkinStatus === "nocheckin") {
-      const now = new Date();
-      const open = flight.checkInOpenUTC ? new Date(flight.checkInOpenUTC) : null;
-      const close = flight.checkInCloseUTC ? new Date(flight.checkInCloseUTC) : null;
-
-      if (open && now >= open && (!close || now <= close)) {
-        meta.textContent = "Check-in open";
-      } else {
-        meta.textContent = "Check-in not open";
-      }
-    } else if (flight.checkinStatus === "unknown") {
-      // Only the trip listing knew about this booking, and it says nothing about
-      // check-in; the raw word on its own reads like a fault.
-      meta.textContent = "Check-in status unknown";
-    } else {
-      meta.textContent = flight.checkinStatus;
-    }
+    meta.textContent = checkinLabel(flight, now);
 
     const details = document.createElement("div");
     details.style.fontSize = "11px";
@@ -983,6 +1050,7 @@ async function fetchPasses() {
         renderFlights(upcoming);
       }
       renderDiagnosticsControl();
+      setSummary(cachedData.flights, cachedData.passes);
 
       setStatus("Offline Mode ☁️");
     }
@@ -1018,6 +1086,7 @@ async function fetchPasses() {
       }
       // Offered even with nothing to show: an empty list is the report's whole point.
       renderDiagnosticsControl();
+      setSummary(flights, passes);
 
       // Only the completed refresh can trigger automatic printing. The
       // optimistic cache may still contain an old seat or barcode.
@@ -1061,6 +1130,7 @@ async function fetchPasses() {
           renderFlights(upcoming);
         }
         renderDiagnosticsControl();
+        setSummary(cachedData.flights, cachedData.passes);
       }
       if (autoPrintPending) {
         autoPrintPending = false;

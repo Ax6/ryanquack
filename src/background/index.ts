@@ -12,22 +12,14 @@ import {
   buildDownloadPayload,
   decodeCustomerId,
   extractFlightsFromOrders,
-  extractFlightsFromTrips,
   filterReadyBookings,
   markUnconfirmedFlights,
-  mergeFlights,
   sortPassesByDeparture,
 } from "../lib/ryanair";
 import type { BoardingPass, DownloadPayload, FlightSummary, OrderResponse } from "../lib/ryanair";
 import type { CachedPasses, PassesResult, Tokens } from "../lib/messages";
 import { readMessageType } from "../lib/messages";
-import {
-  fetchBoardingPassesInChunks,
-  fetchOrders,
-  fetchTrips,
-  ordersUrl,
-  tripsUrl,
-} from "../lib/api";
+import { fetchBoardingPassesInChunks, fetchOrders, ordersUrl } from "../lib/api";
 import type { ChunkVisit, PageVisit } from "../lib/api";
 import {
   DIAGNOSTICS_STORAGE_KEY,
@@ -84,21 +76,20 @@ async function readDiagnostics(): Promise<DiagnosticReport | null> {
 async function fetchPasses(customerId: string, token: string): Promise<PassesResult> {
   const endpoints = {
     details: newEndpointLog(ordersUrl(customerId, API_ORDERS_URL), customerId),
-    trips: newEndpointLog(tripsUrl(customerId, API_ORDERS_URL), customerId),
     boardingpasses: newEndpointLog(
       redactCustomerId(`${API_BOARDING_PASS_URL}/v1/boardingpasses`, customerId),
       customerId
     ),
   };
-  const schema: { details?: unknown; trips?: unknown; boardingpasses?: unknown } = {};
+  const schema: { details?: unknown; boardingpasses?: unknown } = {};
 
   /** A thrown url carries the customer id, and the report is meant to be postable. */
   const reportableError = (error: unknown) => redactCustomerId(errorText(error), customerId);
 
   /** Logs the page and keeps a value-free skeleton of the first body it sees. */
-  const recordPage = (log: EndpointLog, name: "details" | "trips") => (visit: PageVisit) => {
-    if (log.requests.length === 0) schema[name] = skeleton(visit.body);
-    log.requests.push({ status: visit.status, durationMs: visit.durationMs, items: visit.items });
+  const recordPage = (visit: PageVisit) => {
+    if (endpoints.details.requests.length === 0) schema.details = skeleton(visit.body);
+    endpoints.details.requests.push({ status: visit.status, durationMs: visit.durationMs, items: visit.items });
   };
 
   const recordChunk = (visit: ChunkVisit) => {
@@ -114,41 +105,20 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
   };
 
   let orders: OrderResponse = { items: [] };
-  let tripItems: unknown[] = [];
-  let fromDetails: FlightSummary[] = [];
-  let fromTrips: FlightSummary[] = [];
   let flights: FlightSummary[] = [];
   let bookingIds: number[] = [];
   let passes: BoardingPass[] = [];
   let downloadPayloads: DownloadPayload[] = [];
 
   try {
-    // `/details` stays the primary listing, with its error semantics untouched.
-    // The trip listing is the self-healing half — it sees the bookings `/details`
-    // groups away — but it is undocumented, so a failure there only gets recorded.
-    const [detailsRun, tripsRun] = await Promise.all([
-      fetchOrders(customerId, token, API_ORDERS_URL, fetch, recordPage(endpoints.details, "details"))
-        .then(
-          (value) => ({ ok: true as const, value }),
-          (error: unknown) => {
-            endpoints.details.error = reportableError(error);
-            return { ok: false as const, error };
-          }
-        ),
-      fetchTrips(customerId, token, API_ORDERS_URL, fetch, recordPage(endpoints.trips, "trips"))
-        .catch((error: unknown) => {
-          endpoints.trips.error = reportableError(error);
-          return { items: [] as unknown[] };
-        }),
-    ]);
+    try {
+      orders = await fetchOrders(customerId, token, API_ORDERS_URL, fetch, recordPage);
+    } catch (error) {
+      endpoints.details.error = reportableError(error);
+      throw error;
+    }
 
-    tripItems = tripsRun.items;
-    if (!detailsRun.ok) throw detailsRun.error;
-    orders = detailsRun.value;
-
-    fromDetails = extractFlightsFromOrders(orders);
-    fromTrips = extractFlightsFromTrips(tripItems);
-    flights = mergeFlights(fromDetails, fromTrips);
+    flights = extractFlightsFromOrders(orders);
 
     // A booking with two legs is two rows; asking for its passes twice would
     // hand the popup every pass on it twice.
@@ -164,8 +134,9 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
       downloadPayloads = passes.map(buildDownloadPayload);
     }
 
-    // A trip-listing booking that produced no pass belongs in the upcoming list.
-    // Reconciled before the result is built, so the cache holds the same answer.
+    // A booking that produced no pass belongs in the upcoming list, whatever its
+    // status said. Reconciled before the result is built, so the cache holds the
+    // same answer.
     flights = markUnconfirmedFlights(flights, passes);
 
     const result: PassesResult = { flights, passes, downloadPayloads };
@@ -181,8 +152,7 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
         environment: readEnvironment(),
         endpoints,
         orders,
-        trips: tripItems,
-        merge: { fromDetails, fromTrips, merged: flights, readyBookingIds: bookingIds },
+        list: { flights, readyBookingIds: bookingIds },
         passes,
         schema,
       }));

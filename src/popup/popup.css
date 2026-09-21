@@ -69,6 +69,16 @@ button:disabled {
   line-height: 1.4;
 }
 
+/* The count line: what the list holds, so nobody has to count rows. */
+#summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: #073590;
+  text-align: center;
+  line-height: 1.4;
+  margin-bottom: 2px;
+}
+
 #progress {
   height: 3px;
   margin-bottom: 8px;

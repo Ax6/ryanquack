@@ -101,7 +101,7 @@ describe("print tab refresh", () => {
 });
 
 describe("diagnostic report button", () => {
-  const REPORT = { generatedAt: "2026-09-20T12:00:00.000Z", merge: { onlyInTrips: 6 } };
+  const REPORT = { generatedAt: "2026-09-20T12:00:00.000Z", list: { bookings: 128, flights: 138 } };
 
   let writeText: ReturnType<typeof vi.fn>;
 
@@ -199,21 +199,32 @@ describe("upcoming flight labels", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.resetAllMocks();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-21T12:00:00Z"));
     window.history.replaceState(null, "", "?");
     document.body.innerHTML = `
       <div id="bulk-actions"></div><div id="search-bar"></div>
-      <div id="passes"></div><div id="status"></div>
+      <div id="passes"></div><div id="summary" hidden></div><div id="status"></div>
       <div id="progress"></div><div id="progress-fill"></div><div id="failures"></div>`;
     vi.stubGlobal("CACHE_TTL_MS", 3_600_000);
     mocks.get.mockResolvedValue({});
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  async function render(flights: FlightSummary[]) {
-    mocks.sendMessage.mockResolvedValue({ passes: [], downloadPayloads: [], flights });
+  /** As the popup prints it, in the machine's own zone, so the test runs anywhere. */
+  function shortDateTime(isoUtc: string): string {
+    const date = new Date(isoUtc);
+    const day = date.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
+    const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    return `${day} ${time}`;
+  }
+
+  async function render(flights: FlightSummary[], passes: BoardingPass[] = []) {
+    mocks.sendMessage.mockResolvedValue({ passes, downloadPayloads: passes.map(buildDownloadPayload), flights });
     await import("./index");
     await settle();
     return Array.from(document.querySelectorAll(".flight-summary"))
@@ -221,15 +232,67 @@ describe("upcoming flight labels", () => {
   }
 
   it("should name an unknown check-in status rather than print the word", async () => {
-    // A booking only the trip listing knew about, which produced no pass.
     expect(await render([flight({})])).toEqual(["Check-in status unknown"]);
     expect(document.querySelectorAll(".flight-summary")).toHaveLength(1);
   });
 
-  it("should leave every other status as it was", async () => {
+  it("should tell a passenger without a seat when free check-in opens, not when paid check-in did", async () => {
+    // Ryanair's site says "open" here; the reporter called that misleading.
+    const window = {
+      checkInOpenUTC: "2026-07-24T06:00:00Z",
+      checkInFreeOpenUTC: "2026-09-22T06:00:00Z",
+      checkInCloseUTC: "2026-09-23T04:00:00Z",
+    };
     expect(await render([
+      flight({ checkinStatus: "nocheckin", ...window, hasSeat: false }),
+      flight({ checkinStatus: "nocheckin", ...window, hasSeat: true }),
+      flight({ checkinStatus: "documentsadded", ...window, hasSeat: false }),
+    ])).toEqual([
+      `Check-in opens ${shortDateTime(window.checkInFreeOpenUTC)}`,
+      "Check-in open",
+      `Documents added · Check-in opens ${shortDateTime(window.checkInFreeOpenUTC)}`,
+    ]);
+  });
+
+  it("should say when check-in is open, closed, or has no window it knows of", async () => {
+    expect(await render([
+      flight({ checkinStatus: "nocheckin", checkInFreeOpenUTC: "2026-09-21T06:00:00Z", checkInCloseUTC: "2026-09-22T04:00:00Z" }),
+      flight({ checkinStatus: "documentsadded", checkInFreeOpenUTC: "2026-09-21T06:00:00Z" }),
+      flight({ checkinStatus: "nocheckin", checkInOpenUTC: "2026-09-01T06:00:00Z", checkInCloseUTC: "2026-09-20T04:00:00Z" }),
       flight({ checkinStatus: "nocheckin" }),
+    ])).toEqual([
+      "Check-in open",
+      "Documents added · Check-in open",
+      "Check-in closed",
+      "Check-in not open",
+    ]);
+  });
+
+  it("should make a status it has never seen readable rather than print Ryanair's token", async () => {
+    expect(await render([
       flight({ checkinStatus: "closed" }),
-    ])).toEqual(["Check-in not open", "closed"]);
+      flight({ checkinStatus: "boardingDenied" }),
+      flight({ checkinStatus: "checkin" }),
+    ])).toEqual(["Closed", "Boarding denied", "Checked in"]);
+  });
+
+  it("should count bookings, upcoming flights and passes in the summary line", async () => {
+    const pass = result("CODE", "1A").passes[0];
+    await render([
+      flight({ bookingId: 1, checkinStatus: "checkin", isReady: true, pnr: "MOCK01" }),
+      flight({ bookingId: 2, checkinStatus: "nocheckin" }),
+      flight({ bookingId: 2, checkinStatus: "nocheckin", flightNumber: "FR1001" }),
+      flight({ bookingId: 3, checkinStatus: "documentsadded" }),
+    ], [pass]);
+
+    const summary = document.getElementById("summary") as HTMLElement;
+    expect(summary.hidden).toBe(false);
+    expect(summary.textContent).toBe("3 bookings · 3 upcoming flights · 1 boarding pass");
+  });
+
+  it("should hide the summary line when there is nothing to count", async () => {
+    await render([]);
+
+    expect((document.getElementById("summary") as HTMLElement).hidden).toBe(true);
   });
 });

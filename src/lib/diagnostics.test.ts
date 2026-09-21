@@ -8,9 +8,8 @@ import {
   redactCustomerId,
   skeleton,
   summarizeDetails,
-  summarizeMerge,
+  summarizeList,
   summarizePasses,
-  summarizeTrips,
   summarizeUserAgent,
 } from "./diagnostics";
 import type { DiagnosticInput } from "./diagnostics";
@@ -108,7 +107,7 @@ describe("skeleton", () => {
     expect(JSON.stringify(skeleton(nested))).not.toContain("string");
   });
 
-  it("should reach the nesting the trip listing hides bookings in", () => {
+  it("should reach a deeply nested itinerary", () => {
     const body = { items: [{ flights: [{ journeys: [{ segments: [{ flightNumber: SEED_FLIGHT, departureDateUTC: SEED_DATE }] }] }] }] };
 
     expect(skeleton(body)).toEqual({
@@ -237,46 +236,23 @@ const ORDERS: OrderResponse = {
       rawBooking: {
         bookingId: 1000, recordLocator: SEED_PNR,
         flights: [{ journeyNum: 0, origin: SEED_ORIGIN, destination: SEED_DESTINATION, flightNumber: SEED_FLIGHT, times: { departUTC: SEED_DATE } }],
-        checkins: [{ journeyNum: 0, status: "checkedin" }],
+        checkins: [{ journeyNum: 0, status: "checkin" }],
       },
+      processingStatus: { code: "PROCESSED", reason: null },
+      rawBookingFailure: null,
     },
     {
-      tripId: "trip-1", productId: "1001", type: "flight",
-      payload: { booking: { bookingId: 1001, pnr: "AAA111" } },
-      rawBooking: { bookingId: 1001, recordLocator: "AAA111" },
+      // Ryanair could not load the booking: only the site's own view of it is there.
+      tripId: "trip-2", productId: "9001", type: "flight",
+      payload: { booking: {
+        bookingId: 9001, pnr: "GROUP1", origin: SEED_ORIGIN, destination: SEED_DESTINATION,
+        journeys: [{ segments: [{ origin: SEED_ORIGIN, destination: SEED_DESTINATION, flightNumber: SEED_FLIGHT, departureTime: SEED_DATE }] }],
+      } },
+      processingStatus: { code: "FAILED", reason: "upstream timeout" },
+      rawBookingFailure: { message: "upstream timeout" },
     },
   ],
 };
-
-/**
- * One trip holding three bookings: the shape we always read, a shape we never
- * guessed at, and a node that is not a booking at all.
- */
-const TRIP_ITEMS: unknown[] = [
-  {
-    tripId: "trip-1", startDate: SEED_DATE, endDate: "2026-09-22T07:15:00Z",
-    cars: [], rooms: [], events: [],
-    flights: [
-      {
-        bookingId: 1000, pnr: SEED_PNR, origin: SEED_ORIGIN, destination: SEED_DESTINATION,
-        passengers: [{ first: SEED_FIRST, last: SEED_LAST }],
-        journeys: [{ segments: [{ flightNumber: SEED_FLIGHT, departureDateUTC: SEED_DATE }] }],
-      },
-      {
-        id: "9001", recordLocator: "GROUP1",
-        passengers: [{ first: SEED_FIRST, last: SEED_LAST }],
-        itinerary: {
-          journeys: [{ sectors: [{ segments: [{
-            origin: SEED_ORIGIN, destination: SEED_DESTINATION,
-            flightNumber: SEED_FLIGHT, departureDateUTC: SEED_DATE,
-          }] }] }],
-        },
-      },
-      { note: "not a booking at all" },
-    ],
-  },
-  { tripId: "trip-2", cars: [{ id: 1 }] },
-];
 
 const PASSES = [
   {
@@ -298,135 +274,82 @@ const PASSES = [
 ] as unknown as BoardingPass[];
 
 describe("summaries", () => {
-  it("should count what the details listing repeats, and hash what identifies it", async () => {
+  it("should count what the details listing holds, and hash what identifies it", async () => {
     const hash = createHasher("salt");
     const summary = await summarizeDetails(ORDERS, hash);
 
     expect(summary).toMatchObject({
       items: 2,
-      // Two items, one trip: exactly the grouping that hides bookings.
-      distinctTripIds: 1,
+      distinctTripIds: 2,
       distinctProductIds: 2,
       distinctBookingIds: 2,
+      tally: {
+        types: { flight: 2 },
+        checkins: { checkin: 1 },
+        sources: { rawBooking: 1, payload: 1 },
+        processingStatuses: { PROCESSED: 1, FAILED: 1 },
+        rawBookingFailures: 1,
+      },
     });
     expect(summary.entries[0]).toEqual({
       type: "flight",
       tripId: await hash("trip-1"),
       bookingId: await hash(1000),
       pnr: await hash(SEED_PNR),
+      source: "rawBooking",
       legs: 1,
+      flownLegs: 0,
       parsedLegs: 1,
-      checkins: ["checkedin"],
+      checkins: ["checkin"],
       productId: await hash("1000"),
     });
-    // Falls back to the payload when rawBooking carries no legs.
-    expect(summary.entries[1]).toMatchObject({ legs: 0, parsedLegs: 0, pnr: await hash("AAA111") });
+    // Read from the payload: no raw legs to count, one row all the same.
+    expect(summary.entries[1]).toMatchObject({
+      source: "payload", legs: 0, flownLegs: 0, parsedLegs: 1, pnr: await hash("GROUP1"), checkins: [],
+    });
   });
 
-  it("should count a leg it could not read as unparsed", async () => {
+  it("should count a leg it could not read as unparsed, and a flown leg as flown", async () => {
     const orders = {
       items: [{ rawBooking: { bookingId: 1, recordLocator: "AAA111", flights: [
         { journeyNum: 0, origin: SEED_ORIGIN, destination: SEED_DESTINATION, flightNumber: SEED_FLIGHT, times: { departUTC: SEED_DATE } },
         { journeyNum: 1, origin: SEED_ORIGIN, destination: SEED_DESTINATION, flightNumber: "" },
-      ] } }],
+        { journeyNum: 2, origin: SEED_ORIGIN, destination: SEED_DESTINATION, flightNumber: SEED_FLIGHT, times: { departUTC: SEED_DATE } },
+      ], checkins: [{ journeyNum: 2, status: "flown" }] } }],
     } as unknown as OrderResponse;
 
     expect((await summarizeDetails(orders, createHasher("salt"))).entries[0])
-      .toMatchObject({ legs: 2, parsedLegs: 1 });
+      .toMatchObject({ legs: 3, flownLegs: 1, parsedLegs: 1 });
   });
 
-  it("should count every booking the trip listing holds, and say which it could read", async () => {
-    const summary = await summarizeTrips(TRIP_ITEMS, createHasher("salt"));
-
-    expect(summary).toMatchObject({
-      items: 2, distinctTripIds: 2, totalBookings: 3, totalParsedBookings: 2,
-    });
-    expect(summary.entries[0]).toMatchObject({ flights: 3, parsedBookings: 2 });
-
-    expect(summary.entries[0].bookings[0]).toMatchObject({
-      parsed: true,
-      bookingIdKey: "bookingId",
-      bookingIdNumeric: true,
-      pnrKey: "pnr",
-      dateKey: "departureDateUTC",
-      flightNumberKey: "flightNumber",
-      routeKey: "origin",
-      journeys: 1,
-      segments: 1,
-    });
-
-    // The same booking in a shape we never guessed at, read anyway.
-    expect(summary.entries[0].bookings[1]).toMatchObject({
-      parsed: true,
-      bookingIdKey: "id",
-      bookingIdNumeric: false,
-      pnrKey: "recordLocator",
-      dateKey: "departureDateUTC",
-      // Not under `journeys` here, so the raw counts are honestly zero.
-      journeys: 0,
-      segments: 0,
-    });
-
-    expect(summary.entries[0].bookings[2]).toMatchObject({
-      parsed: false,
-      bookingIdKey: null,
-      pnrKey: null,
-      dateKey: null,
-      flightNumberKey: null,
-      routeKey: null,
-    });
-    expect(summary.entries[1]).toMatchObject({ flights: 0, parsedBookings: 0, bookings: [] });
-  });
-
-  it("should hash a booking the same whichever key its id was under", async () => {
-    const hash = createHasher("salt");
-    const summary = await summarizeTrips([{ flights: [
-      { bookingId: 9001, pnr: "GROUP1" },
-      { id: "9001", recordLocator: "GROUP1" },
-    ] }], hash);
-
-    const [first, second] = summary.entries[0].bookings;
-    expect(first.bookingId).toBe(second.bookingId);
-    expect(first.bookingId).toBe(await hash("9001"));
-  });
-
-  it("should count which side of the merge each booking came from", () => {
-    const flight = (bookingId: number, isReady: boolean): FlightSummary => ({
-      bookingId, pnr: "", origin: "", destination: "", date: "",
-      flightNumber: "", checkinStatus: isReady ? "checkedin" : "nocheckin", isReady,
-    });
-    const fromDetails = [flight(1, true), flight(2, false)];
-    const fromTrips = [flight(1, true), flight(3, true)];
-    const passes = [{ bookingId: 1, pnr: "" }, { bookingId: 3, pnr: "" }] as unknown as BoardingPass[];
-
-    expect(summarizeMerge(fromDetails, fromTrips, [...fromDetails, flight(3, true)], [1, 3], passes))
-      .toEqual({
-        onlyInDetails: 1, onlyInTrips: 1, inBoth: 1, total: 3, ready: 2, readyBookingIds: 2,
-        unconfirmed: 0, bookingIdsWithPasses: 2, renderedNowhere: 0,
-      });
-  });
-
-  it("should count the trip-listing bookings the reconcile could not confirm", () => {
+  it("should count the list the popup shows", () => {
     const flight = (bookingId: number, checkinStatus: string, isReady: boolean): FlightSummary => ({
-      bookingId, pnr: "", origin: "", destination: "", date: "",
+      bookingId, pnr: `PNR${bookingId}`, origin: "", destination: "", date: "",
       flightNumber: "", checkinStatus, isReady,
     });
-    // Two came only from the trip listing; one of them produced no pass.
-    const merged = [flight(1, "checkedin", true), flight(2, "unknown", true), flight(3, "unknown", false)];
-    const passes = [{ bookingId: 1, pnr: "" }, { bookingId: 2, pnr: "" }] as unknown as BoardingPass[];
+    const flights = [
+      flight(1, "checkin", true),
+      flight(2, "nocheckin", false),
+      flight(2, "nocheckin", false),
+      flight(3, "documentsadded", false),
+    ];
+    const passes = [{ pnr: "PNR1" }] as unknown as BoardingPass[];
 
-    expect(summarizeMerge([merged[0]], merged.slice(1), merged, [1, 2, 3], passes))
-      .toMatchObject({ total: 3, ready: 2, readyBookingIds: 3, unconfirmed: 1, renderedNowhere: 0 });
+    expect(summarizeList(flights, [1, 3], passes)).toEqual({
+      bookings: 3, flights: 4, ready: 1, upcoming: 3,
+      readyBookingIds: 2, bookingIdsWithPasses: 1, renderedNowhere: 0,
+      statuses: { checkin: 1, nocheckin: 2, documentsadded: 1 },
+    });
   });
 
   it("should count a booking that renders in neither list", () => {
     // Zero everywhere else in this suite, so a non-zero here is the metric working.
     const stranded: FlightSummary = {
       bookingId: 9001, pnr: "GROUP1", origin: "", destination: "", date: "",
-      flightNumber: "", checkinStatus: "checkedin", isReady: true,
+      flightNumber: "", checkinStatus: "checkin", isReady: true,
     };
 
-    expect(summarizeMerge([], [stranded], [stranded], [9001], []))
+    expect(summarizeList([stranded], [9001], []))
       .toMatchObject({ renderedNowhere: 1, bookingIdsWithPasses: 0 });
   });
 
@@ -454,23 +377,19 @@ describe("summaries", () => {
 });
 
 function input(overrides: Partial<DiagnosticInput> = {}): DiagnosticInput {
-  // As the background builds it: reconciled, so the unmatched booking is already
-  // in the upcoming list rather than rendering nowhere.
-  const merged = [
-    { bookingId: 1000, pnr: SEED_PNR, origin: SEED_ORIGIN, destination: SEED_DESTINATION, date: SEED_DATE, flightNumber: SEED_FLIGHT, checkinStatus: "checkedin", isReady: true },
+  // As the background builds it: reconciled, so the booking with no pass is
+  // already in the upcoming list rather than rendering nowhere.
+  const flights = [
+    { bookingId: 1000, pnr: SEED_PNR, origin: SEED_ORIGIN, destination: SEED_DESTINATION, date: SEED_DATE, flightNumber: SEED_FLIGHT, checkinStatus: "checkin", isReady: true },
     { bookingId: 9001, pnr: "GROUP1", origin: SEED_ORIGIN, destination: SEED_DESTINATION, date: SEED_DATE, flightNumber: SEED_FLIGHT, checkinStatus: "unknown", isReady: false },
   ];
 
   return {
-    environment: { extensionVersion: "0.5.0", userAgent: CHROME_UA, target: "chrome" },
+    environment: { extensionVersion: "0.5.1", userAgent: CHROME_UA, target: "chrome" },
     endpoints: {
       details: {
         url: newEndpointLog(`https://api/orders/v2/orders/${SEED_CUSTOMER_ID}/details`, SEED_CUSTOMER_ID).url,
         requests: [{ status: 200, durationMs: 120, items: 2 }],
-      },
-      trips: {
-        url: newEndpointLog(`https://api/orders/v2/orders/${SEED_CUSTOMER_ID}`, SEED_CUSTOMER_ID).url,
-        requests: [{ status: 200, durationMs: 90, items: 2 }],
       },
       boardingpasses: {
         url: "https://passes/v1/boardingpasses",
@@ -478,10 +397,9 @@ function input(overrides: Partial<DiagnosticInput> = {}): DiagnosticInput {
       },
     },
     orders: ORDERS,
-    trips: TRIP_ITEMS,
-    merge: { fromDetails: merged.slice(0, 1), fromTrips: merged, merged, readyBookingIds: [1000, 9001] },
+    list: { flights, readyBookingIds: [1000, 9001] },
     passes: PASSES,
-    schema: { details: skeleton(ORDERS), trips: skeleton({ items: TRIP_ITEMS }), boardingpasses: skeleton(PASSES) },
+    schema: { details: skeleton(ORDERS), boardingpasses: skeleton(PASSES) },
     salt: "fixed-salt",
     now: new Date("2026-09-20T12:00:00Z"),
     ...overrides,
@@ -489,25 +407,23 @@ function input(overrides: Partial<DiagnosticInput> = {}): DiagnosticInput {
 }
 
 describe("the report", () => {
-  it("should carry the environment, the endpoint tallies and the merge counts", async () => {
+  it("should carry the environment, the endpoint tallies and the list counts", async () => {
     const report = await buildDiagnosticReport(input());
 
     expect(report).toMatchObject({
       generatedAt: "2026-09-20T12:00:00.000Z",
-      extensionVersion: "0.5.0",
+      extensionVersion: "0.5.1",
       userAgent: "Chrome 141 on macOS",
       target: "chrome",
-      merge: {
-        onlyInDetails: 0, onlyInTrips: 1, inBoth: 1, total: 2, ready: 1, readyBookingIds: 2,
-        unconfirmed: 1, bookingIdsWithPasses: 1, renderedNowhere: 0,
+      list: {
+        bookings: 2, flights: 2, ready: 1, upcoming: 1, readyBookingIds: 2,
+        bookingIdsWithPasses: 1, renderedNowhere: 0, statuses: { checkin: 1, unknown: 1 },
       },
     });
     expect(report.endpoints.details).toMatchObject({ pages: 1, items: 2, durationMs: 120 });
     expect(report.endpoints.boardingpasses).toMatchObject({ pages: 2, items: 1, durationMs: 340 });
     expect(report.endpoints.boardingpasses.requests[1].error).toContain("500");
-    expect(report.details.distinctTripIds).toBe(1);
-    expect(report.trips.totalBookings).toBe(3);
-    expect(report.trips.totalParsedBookings).toBe(2);
+    expect(report.details.tally.rawBookingFailures).toBe(1);
     expect(report.passes.count).toBe(2);
     expect(report.passes.paxTypes).toEqual({ ADT: 1, CHD: 1 });
   });
@@ -519,7 +435,7 @@ describe("the report", () => {
       expect(json).not.toContain(leak);
     }
     expect(json).toContain("<cid>");
-    // The hashed pnr is there, so duplicates across the two listings still line up.
+    // The hashed pnr is there, so a booking and its passes still line up.
     expect(json).toContain(await hashValue(SEED_PNR, "fixed-salt"));
   });
 
@@ -527,36 +443,18 @@ describe("the report", () => {
     // What the reporter refused to post: their itinerary, three times over.
     const json = JSON.stringify(await buildDiagnosticReport(input()));
 
-    for (const leak of [SEED_ORIGIN, SEED_DESTINATION, SEED_FLIGHT, SEED_DATE, "2026-09-22"]) {
+    for (const leak of [SEED_ORIGIN, SEED_DESTINATION, SEED_FLIGHT, SEED_DATE, "2026-09-22", "upstream timeout"]) {
       expect(json).not.toContain(leak);
     }
-    // What it says instead: which key we read, and whether we read it.
-    expect(json).toContain("departureDateUTC");
-    expect(json).toContain("parsed");
+    // What it says instead: the shape, and what we made of it.
+    expect(json).toContain("departureTime");
+    expect(json).toContain("rawBookingFailure");
+    expect(json).toContain("parsedLegs");
   });
 
-  it("should describe the parse rather than the itinerary, key by key", async () => {
+  it("should hash the same booking to the same value in the listing and the passes", async () => {
     const report = await buildDiagnosticReport(input());
 
-    expect(report.trips.entries[0].bookings[1]).toEqual({
-      bookingId: await hashValue("9001", "fixed-salt"),
-      pnr: await hashValue("GROUP1", "fixed-salt"),
-      journeys: 0,
-      segments: 0,
-      parsed: true,
-      bookingIdKey: "id",
-      bookingIdNumeric: false,
-      pnrKey: "recordLocator",
-      dateKey: "departureDateUTC",
-      flightNumberKey: "flightNumber",
-      routeKey: "origin",
-    });
-  });
-
-  it("should hash the same booking to the same value across the two listings", async () => {
-    const report = await buildDiagnosticReport(input());
-
-    expect(report.details.entries[0].bookingId).toBe(report.trips.entries[0].bookings[0].bookingId);
     expect(report.details.entries[0].pnr).toBe(report.passes.entries[0].pnr);
   });
 
@@ -564,15 +462,18 @@ describe("the report", () => {
     const empty = input({
       endpoints: {
         ...input().endpoints,
-        trips: { url: "https://api/orders/v2/orders/<cid>", requests: [], error: "trips failed: 500" },
+        details: { url: "https://api/orders/v2/orders/<cid>/details", requests: [], error: "orders failed: 500" },
       },
-      trips: [],
+      orders: { items: [] },
+      list: { flights: [], readyBookingIds: [] },
+      passes: [],
     });
 
     const report = await buildDiagnosticReport(empty);
 
-    expect(report.endpoints.trips).toMatchObject({ pages: 0, items: 0, error: "trips failed: 500" });
-    expect(report.trips).toMatchObject({ items: 0, totalBookings: 0, entries: [] });
+    expect(report.endpoints.details).toMatchObject({ pages: 0, items: 0, error: "orders failed: 500" });
+    expect(report.details).toMatchObject({ items: 0, entries: [] });
+    expect(report.list).toMatchObject({ bookings: 0, flights: 0 });
   });
 
   it("should draw a fresh salt when none is given, so hashes cannot be compared across reports", async () => {
@@ -586,59 +487,29 @@ describe("the report", () => {
 });
 
 describe("keeping the report postable", () => {
-  /** The obvious shape, the shape we never guessed at, and a node that is neither. */
-  function tripBookingOf(index: number): unknown {
-    if (index % 3 === 0) {
-      return {
-        bookingId: 1000 + index, pnr: `AAA${String(index).padStart(3, "0")}`,
-        origin: SEED_ORIGIN, destination: SEED_DESTINATION,
-        journeys: [{ segments: [{ flightNumber: SEED_FLIGHT, departureDateUTC: SEED_DATE }] }],
-      };
-    }
-    if (index % 3 === 1) {
-      return {
-        id: String(1000 + index), recordLocator: `BBB${String(index).padStart(3, "0")}`,
-        passengers: [{ first: SEED_FIRST, last: SEED_LAST }],
-        itinerary: { journeys: [{ sectors: [{ segments: [{
-          origin: SEED_ORIGIN, destination: SEED_DESTINATION,
-          flightNumber: SEED_FLIGHT, departureDateUTC: SEED_DATE,
-        }] }] }] },
-      };
-    }
-    return { note: `nothing we can read, ${index}` };
-  }
-
-  const TRIPS = 150;
-  /** 50 trips carry a second booking, so 150 trips hold 200 bookings. */
-  const DOUBLED = 50;
-
-  function heavyTrips(): unknown[] {
-    let booking = 0;
-    return Array.from({ length: TRIPS }, (_, trip) => ({
-      tripId: `trip-${trip}`,
-      startDate: SEED_DATE,
-      endDate: SEED_DATE,
-      cars: [], rooms: [], events: [],
-      flights: Array.from({ length: trip < DOUBLED ? 2 : 1 }, () => tripBookingOf(booking++)),
-    }));
-  }
+  const BOOKINGS = 200;
 
   function heavyOrders(): OrderResponse {
     return {
-      items: Array.from({ length: 200 }, (_, index) => ({
-        tripId: `trip-${index % TRIPS}`, productId: String(index), type: "flight",
+      items: Array.from({ length: BOOKINGS }, (_, index) => ({
+        tripId: `trip-${index}`, productId: String(index), type: "flight",
         payload: { booking: { bookingId: 1000 + index, pnr: `AAA${index}` } },
         rawBooking: {
           bookingId: 1000 + index, recordLocator: `AAA${index}`,
           flights: [{ journeyNum: 0, origin: SEED_ORIGIN, destination: SEED_DESTINATION, flightNumber: SEED_FLIGHT, times: { departUTC: SEED_DATE } }],
-          checkins: [{ journeyNum: 0, status: index % 2 === 0 ? "checkedin" : "nocheckin" }],
+          // Groups of up to thirteen, as a real account had.
+          checkins: Array.from({ length: 1 + (index % 13) }, (_, pax) => ({
+            journeyNum: 0, paxNum: pax, segmentNum: 0, status: index % 2 === 0 ? "checkin" : "nocheckin",
+          })),
         },
+        processingStatus: { code: "PROCESSED", reason: null },
+        rawBookingFailure: null,
       })),
     };
   }
 
   function heavyPasses(): BoardingPass[] {
-    return Array.from({ length: 200 }, (_, index) => ({
+    return Array.from({ length: BOOKINGS }, (_, index) => ({
       pnr: `AAA${index}`,
       paxType: index % 10 === 0 ? "CHD" : "ADT",
       barcode: index % 25 === 0 ? null : SEED_BARCODE,
@@ -651,66 +522,42 @@ describe("keeping the report postable", () => {
 
   function heavyInput(): DiagnosticInput {
     const orders = heavyOrders();
-    const trips = heavyTrips();
     const passes = heavyPasses();
-    const merged: FlightSummary[] = Array.from({ length: 200 }, (_, index) => ({
+    const flights: FlightSummary[] = Array.from({ length: BOOKINGS }, (_, index) => ({
       bookingId: 1000 + index, pnr: `AAA${index}`, origin: SEED_ORIGIN, destination: SEED_DESTINATION,
-      date: SEED_DATE, flightNumber: SEED_FLIGHT, checkinStatus: "checkedin", isReady: true,
+      date: SEED_DATE, flightNumber: SEED_FLIGHT, checkinStatus: "checkin", isReady: true,
     }));
 
     return input({
       orders,
-      trips,
       passes,
-      merge: { fromDetails: merged, fromTrips: merged, merged, readyBookingIds: merged.map((f) => f.bookingId) },
-      schema: {
-        details: skeleton(orders),
-        trips: skeleton({ items: trips }),
-        boardingpasses: skeleton(passes),
-      },
+      list: { flights, readyBookingIds: flights.map((f) => f.bookingId) },
+      schema: { details: skeleton(orders), boardingpasses: skeleton(passes) },
     });
   }
 
-  it("should stay well inside what an issue comment holds, at 200 bookings across 150 trips", async () => {
+  it("should stay well inside what an issue comment holds, at 200 bookings", async () => {
     const report = await buildDiagnosticReport(heavyInput());
 
     // GitHub caps a comment at 65,536 characters, and a report nobody can paste
     // costs us the one round we get with a reporter. Indented, because that is
     // the form the popup puts on the clipboard.
-    expect(JSON.stringify(report, null, 2).length).toBeLessThan(50_000);
-    expect(JSON.stringify(report).length).toBeLessThan(50_000);
-    expect(report.trips.items).toBe(TRIPS);
-    expect(report.trips.totalBookings).toBe(200);
-  });
-
-  it("should count all 200 bookings in the tally however few rows it keeps", async () => {
-    const report = await buildDiagnosticReport(heavyInput());
-    const { tally, entries, entriesTruncated } = report.trips;
-    const sum = (counts: Record<string, number>) =>
-      Object.values(counts).reduce((total, count) => total + count, 0);
-
-    for (const counts of [tally.bookingIdKeys, tally.pnrKeys, tally.dateKeys, tally.flightNumberKeys, tally.routeKeys]) {
-      expect(sum(counts)).toBe(200);
-    }
-    expect(tally.parsed + tally.unparsed).toBe(200);
-    expect(tally.numericBookingIds + tally.stringBookingIds).toBe(tally.parsed);
-    // Two shapes in, two shapes counted, and the key each was read under.
-    expect(tally.bookingIdKeys).toEqual({ bookingId: 67, id: 67, none: 66 });
-    expect(tally.pnrKeys).toEqual({ pnr: 67, recordLocator: 67, none: 66 });
-
-    // The rows are examples; the count above is the listing.
-    expect(entries).toHaveLength(20);
-    expect(entriesTruncated).toBe(TRIPS - 20);
-    expect(entries.length + entriesTruncated).toBe(report.trips.items);
+    expect(JSON.stringify(report, null, 2).length).toBeLessThan(40_000);
+    expect(report.details.items).toBe(BOOKINGS);
   });
 
   it("should count every details item and pass however few rows it keeps", async () => {
     const report = await buildDiagnosticReport(heavyInput());
 
-    expect(report.details.tally).toEqual({
+    expect(report.details.tally).toMatchObject({
       types: { flight: 200 },
-      checkins: { checkedin: 100, nocheckin: 100 },
+      sources: { rawBooking: 200 },
+      processingStatuses: { PROCESSED: 200 },
+      rawBookingFailures: 0,
     });
+    // 1..13 passengers cycling over 200 bookings: every record counted.
+    const records = Object.values(report.details.tally.checkins).reduce((sum, n) => sum + n, 0);
+    expect(records).toBe(Array.from({ length: 200 }, (_, i) => 1 + (i % 13)).reduce((a, b) => a + b, 0));
     expect(report.details.entries).toHaveLength(20);
     expect(report.details.entriesTruncated).toBe(180);
 
@@ -720,51 +567,39 @@ describe("keeping the report postable", () => {
     expect(report.passes.entriesTruncated).toBe(180);
   });
 
-  it("should keep the schema skeletons whole, since they are the point", async () => {
+  it("should keep the schema skeleton whole, since it is the point", async () => {
     const report = await buildDiagnosticReport(heavyInput());
-    const trips = JSON.stringify(report.schema.trips);
+    const details = JSON.stringify(report.schema.details);
 
-    // Both shapes, and how many bookings answered to each.
-    expect(trips).toContain("bookingId");
-    expect(trips).toContain("itinerary");
-    expect(trips).toMatch(/×\d+\/200/);
+    expect(details).toContain("rawBooking");
+    expect(details).toContain("checkins");
+    expect(details).toMatch(/×\d+\/200/);
   });
 
-  it("should keep the interesting rows and fill the rest from the start", async () => {
-    // Only the last two trips hold more than one booking.
-    const trips = Array.from({ length: 25 }, (_, index) => ({
-      tripId: `trip-${index}`,
-      flights: index >= 23
-        ? [tripBookingOf(0), tripBookingOf(3)]
-        : [tripBookingOf(0)],
-    }));
+  it("should keep the rows worth reading and fill the rest from the start", async () => {
+    // Two items Ryanair failed to load, buried at the end of a long listing.
+    const orders = heavyOrders();
+    for (const index of [190, 199]) {
+      const item = orders.items[index];
+      delete item.rawBooking;
+      item.rawBookingFailure = { message: "timeout" };
+      item.payload = { booking: {
+        bookingId: 1000 + index, pnr: `AAA${index}`,
+        journeys: [{ segments: [{ flightNumber: SEED_FLIGHT, departureTime: SEED_DATE }] }],
+      } };
+    }
 
     const hash = createHasher("salt");
-    const summary = await summarizeTrips(trips, hash);
+    const summary = await summarizeDetails(orders, hash);
 
     expect(summary.entries).toHaveLength(20);
-    expect(summary.entriesTruncated).toBe(5);
+    expect(summary.entriesTruncated).toBe(180);
     // The two worth reading, plus the first eighteen, in the order they arrived.
-    expect(summary.entries.filter((entry) => entry.flights > 1)).toHaveLength(2);
+    expect(summary.entries.filter((entry) => entry.source === "payload")).toHaveLength(2);
     expect(summary.entries[0].tripId).toBe(await hash("trip-0"));
     expect(summary.entries[17].tripId).toBe(await hash("trip-17"));
-    expect(summary.entries[18].tripId).toBe(await hash("trip-23"));
-    expect(summary.entries[19].tripId).toBe(await hash("trip-24"));
-  });
-
-  it("should keep the bookings it could not read when a trip holds too many", async () => {
-    const flights = Array.from({ length: 25 }, (_, index) =>
-      index === 20 || index === 24 ? { note: "unreadable" } : tripBookingOf(0));
-
-    const summary = await summarizeTrips([{ tripId: "trip-1", flights }], createHasher("salt"));
-    const [entry] = summary.entries;
-
-    expect(entry.flights).toBe(25);
-    expect(entry.bookings).toHaveLength(20);
-    expect(entry.bookingsTruncated).toBe(5);
-    expect(entry.bookings.filter((booking) => !booking.parsed)).toHaveLength(2);
-    // Counted in full regardless.
-    expect(summary.tally.unparsed).toBe(2);
-    expect(summary.tally.parsed).toBe(23);
+    expect(summary.entries[18].tripId).toBe(await hash("trip-190"));
+    expect(summary.entries[19].tripId).toBe(await hash("trip-199"));
+    expect(summary.tally.rawBookingFailures).toBe(2);
   });
 });

@@ -134,11 +134,6 @@ export function ordersUrl(customerId: string, baseUrl: string): string {
   return `${baseUrl}/orders/v2/orders/${customerId}/details?type=flight&active=true&order=ASC`;
 }
 
-/** The trip listing myRyanair itself uses. Same paging, one entry per trip. */
-export function tripsUrl(customerId: string, baseUrl: string): string {
-  return `${baseUrl}/orders/v2/orders/${customerId}?active=true&order=ASC`;
-}
-
 /**
  * Fetches every page of the customer's active flight orders and merges them.
  * `order=ASC` asks the server for soonest-first, the same way myRyanair does.
@@ -154,30 +149,6 @@ export async function fetchOrders(
     ordersUrl(customerId, baseUrl),
     { ...BOARDINGPASSES_HEADERS, "x-auth-token": xAuthToken },
     "orders",
-    fetchImpl,
-    onPage
-  );
-
-  return { items };
-}
-
-/**
- * Fetches the trip listing the myRyanair site reads. `/details` answers with one
- * entry per trip, so a trip holding several bookings loses all but one of them;
- * this listing carries the whole `flights` array, and the caller unions the two.
- * Loosely typed on purpose: the nesting below `flights` is not documented.
- */
-export async function fetchTrips(
-  customerId: string,
-  xAuthToken: string,
-  baseUrl: string,
-  fetchImpl: typeof fetch = fetch,
-  onPage?: PageListener
-): Promise<{ items: unknown[] }> {
-  const items = await fetchAllPages<unknown>(
-    tripsUrl(customerId, baseUrl),
-    { ...BOARDINGPASSES_HEADERS, "x-auth-token": xAuthToken },
-    "trips",
     fetchImpl,
     onPage
   );

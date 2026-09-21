@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchBoardingPass, fetchBoardingPassesInChunks, fetchGoogleWalletToken, downloadPass, fetchOrders, fetchTrips, chunkIds, BOARDINGPASSES_HEADERS, BOARDING_PASS_REQUEST_BUDGET, GOOGLE_WALLET_HEADERS } from "./api";
+import { fetchBoardingPass, fetchBoardingPassesInChunks, fetchGoogleWalletToken, downloadPass, fetchOrders, chunkIds, BOARDINGPASSES_HEADERS, BOARDING_PASS_REQUEST_BUDGET, GOOGLE_WALLET_HEADERS } from "./api";
 import type { ChunkVisit, PageVisit } from "./api";
 import type { DownloadPayload } from "./ryanair";
 
@@ -293,7 +293,7 @@ describe("Order paging", () => {
   });
 });
 
-describe("Trip paging", () => {
+describe("Page listener", () => {
   const MOCK_URL = "http://mock-api";
 
   function pagedFetch(pages: Array<Record<string, unknown>>) {
@@ -304,54 +304,6 @@ describe("Trip paging", () => {
     return mockFetch;
   }
 
-  it("should follow nextToken through the same loop the orders list uses", async () => {
-    const mockFetch = pagedFetch([
-      { items: [{ tripId: "a" }], nextToken: "page 2" },
-      { items: [{ tripId: "b" }] },
-    ]);
-
-    const trips = await fetchTrips("123", "token", MOCK_URL, mockFetch as any);
-
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    expect(trips.items).toEqual([{ tripId: "a" }, { tripId: "b" }]);
-
-    const urls = mockFetch.mock.calls.map((call) => call[0] as string);
-    expect(urls[0]).toBe(`${MOCK_URL}/orders/v2/orders/123?active=true&order=ASC`);
-    expect(urls[0]).not.toContain("/details");
-    expect(urls[1]).toContain("&nextToken=page%202");
-  });
-
-  it("should send the same headers and credentials as the orders list", async () => {
-    const mockFetch = pagedFetch([{ items: [] }]);
-
-    await fetchTrips("123", "token", MOCK_URL, mockFetch as any);
-
-    expect(mockFetch.mock.calls[0][1]).toMatchObject({
-      method: "GET",
-      credentials: "include",
-      headers: { ...BOARDINGPASSES_HEADERS, "x-auth-token": "token" },
-      signal: expect.any(AbortSignal),
-    });
-  });
-
-  it("should stop at the page cap and report failures like the orders list", async () => {
-    const endless = vi.fn().mockImplementation(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ items: [], nextToken: `page-${Math.random()}` }),
-    }));
-    await fetchTrips("123", "token", MOCK_URL, endless as any);
-    expect(endless).toHaveBeenCalledTimes(50);
-
-    await expect(
-      fetchTrips("123", "token", MOCK_URL, vi.fn().mockResolvedValue({ ok: false, status: 403 }) as any)
-    ).rejects.toThrow("LOGIN_REQUIRED");
-
-    await expect(
-      fetchTrips("123", "token", MOCK_URL, vi.fn().mockResolvedValue({ ok: false, status: 500 }) as any)
-    ).rejects.toThrow("trips failed: 500");
-  });
-
   it("should report every page to the listener, with the raw body for a schema sample", async () => {
     const mockFetch = pagedFetch([
       { items: [{ tripId: "a" }], nextToken: "t2" },
@@ -359,7 +311,7 @@ describe("Trip paging", () => {
     ]);
     const visits: PageVisit[] = [];
 
-    await fetchTrips("123", "token", MOCK_URL, mockFetch as any, (visit) => visits.push(visit));
+    await fetchOrders("123", "token", MOCK_URL, mockFetch as any, (visit) => visits.push(visit));
 
     expect(visits).toHaveLength(2);
     expect(visits[0]).toMatchObject({ status: 200, items: 1, body: { items: [{ tripId: "a" }], nextToken: "t2" } });
