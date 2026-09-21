@@ -35,8 +35,9 @@ describe("print tab refresh", () => {
     window.history.replaceState(null, "", "?view=tab&print=1");
     document.body.innerHTML = `
       <div id="bulk-actions"></div><div id="search-bar"></div>
-      <div id="passes"></div><div id="status"></div>
-      <div id="progress"></div><div id="progress-fill"></div><div id="failures"></div>`;
+      <div id="passes"></div>
+      <div id="status-bar"><div id="progress"></div><div id="progress-fill"></div>
+      <div id="summary" hidden></div><div id="status"></div><div id="failures"></div></div>`;
     vi.spyOn(window, "print").mockImplementation(() => {});
     vi.stubGlobal("CACHE_TTL_MS", 3_600_000);
     mocks.get.mockResolvedValue({ cachedPasses: { ...result("OLD", "1A"), cachedAt: Date.now() } });
@@ -116,8 +117,9 @@ describe("diagnostic report button", () => {
     vi.resetAllMocks();
     document.body.innerHTML = `
       <div id="bulk-actions"></div><div id="search-bar"></div>
-      <div id="passes"></div><div id="status"></div>
-      <div id="progress"></div><div id="progress-fill"></div><div id="failures"></div>`;
+      <div id="passes"></div>
+      <div id="status-bar"><div id="progress"></div><div id="progress-fill"></div>
+      <div id="summary" hidden></div><div id="status"></div><div id="failures"></div></div>`;
     vi.stubGlobal("CACHE_TTL_MS", 3_600_000);
     mocks.get.mockResolvedValue({});
     writeText = vi.fn().mockResolvedValue(undefined);
@@ -135,13 +137,15 @@ describe("diagnostic report button", () => {
     await settle();
   }
 
-  it("should offer the button in the tab view, beside the other bulk actions", async () => {
+  it("should offer an icon in the status bar in the tab view, not a button among the actions", async () => {
     await load("?view=tab");
 
     const button = document.getElementById("btn-copy-diagnostics");
     expect(button).not.toBeNull();
-    expect(button?.parentElement?.id).toBe("bulk-actions");
-    expect(button?.textContent).toBe("Copy diagnostic report");
+    expect(button?.parentElement?.id).toBe("status-bar");
+    expect(button?.getAttribute("aria-label")).toBe("Copy diagnostic report");
+    expect(button?.title).toContain("No flight details");
+    expect(document.querySelector("#bulk-actions #btn-copy-diagnostics")).toBeNull();
   });
 
   it("should leave the popup view without one", async () => {
@@ -158,11 +162,11 @@ describe("diagnostic report button", () => {
 
     const json = JSON.stringify(REPORT, null, 2);
     expect(writeText).toHaveBeenCalledWith(json);
-    expect(document.getElementById("status")?.textContent)
-      .toBe("Diagnostic report copied — paste it into the GitHub issue");
+    expect(document.getElementById("status")?.textContent).toBe("Diagnostic report copied");
 
     const details = document.getElementById("diagnostic-report");
     expect(details?.tagName).toBe("DETAILS");
+    expect(details?.parentElement?.id).toBe("status-bar");
     expect(details?.querySelector("summary")?.textContent).toBe("Report contents");
     expect(details?.querySelector("pre")?.textContent).toBe(json);
   });
@@ -204,8 +208,9 @@ describe("upcoming flight labels", () => {
     window.history.replaceState(null, "", "?");
     document.body.innerHTML = `
       <div id="bulk-actions"></div><div id="search-bar"></div>
-      <div id="passes"></div><div id="summary" hidden></div><div id="status"></div>
-      <div id="progress"></div><div id="progress-fill"></div><div id="failures"></div>`;
+      <div id="passes"></div>
+      <div id="status-bar"><div id="progress"></div><div id="progress-fill"></div>
+      <div id="summary" hidden></div><div id="status"></div><div id="failures"></div></div>`;
     vi.stubGlobal("CACHE_TTL_MS", 3_600_000);
     mocks.get.mockResolvedValue({});
   });
@@ -288,6 +293,39 @@ describe("upcoming flight labels", () => {
     const summary = document.getElementById("summary") as HTMLElement;
     expect(summary.hidden).toBe(false);
     expect(summary.textContent).toBe("3 bookings · 3 upcoming flights · 1 boarding pass");
+  });
+
+  it("should offer the search box for upcoming flights alone, and filter them", async () => {
+    await render([
+      flight({ bookingId: 1, pnr: "AAAAAA", flightNumber: "FR2372" }),
+      flight({ bookingId: 2, pnr: "BBBBBB", flightNumber: "FR2372" }),
+      flight({ bookingId: 3, pnr: "CCCCCC", flightNumber: "FR1000", destination: "KRK" }),
+      flight({ bookingId: 4, pnr: "DDDDDD", flightNumber: "FR1001" }),
+    ]);
+
+    const input = document.querySelector<HTMLInputElement>("#search-bar input");
+    expect(input).not.toBeNull();
+    const rows = () => Array.from(document.querySelectorAll<HTMLElement>(".flight-summary"))
+      .filter((row) => row.style.display !== "none").length;
+
+    input!.value = "fr2372";
+    input!.dispatchEvent(new Event("input"));
+    expect(rows()).toBe(2);
+
+    input!.value = "krk";
+    input!.dispatchEvent(new Event("input"));
+    expect(rows()).toBe(1);
+
+    input!.value = "zzz";
+    input!.dispatchEvent(new Event("input"));
+    expect(rows()).toBe(0);
+    expect((document.querySelector(".search-empty") as HTMLElement).style.display).toBe("");
+  });
+
+  it("should not offer the search box for a short list", async () => {
+    await render([flight({ bookingId: 1 }), flight({ bookingId: 2 })]);
+
+    expect(document.querySelector("#search-bar input")).toBeNull();
   });
 
   it("should hide the summary line when there is nothing to count", async () => {

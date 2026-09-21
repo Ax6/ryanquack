@@ -26,8 +26,10 @@ const progressEl = document.getElementById("progress") as HTMLElement;
 const progressFillEl = document.getElementById("progress-fill") as HTMLElement;
 const failuresEl = document.getElementById("failures") as HTMLElement;
 const summaryEl = document.getElementById("summary") as HTMLElement | null;
+const statusBarEl = document.getElementById("status-bar") as HTMLElement | null;
 
-const SEARCH_MIN_PASSES = 4;
+/** Rows, passes and upcoming flights together, before a search box is worth the space. */
+const SEARCH_MIN_ROWS = 4;
 
 // Ryanair rejects large bursts of downloadpass calls, so keep few in flight.
 const BULK_CONCURRENCY = 4;
@@ -730,20 +732,20 @@ async function downloadAllPasses(jobs: BulkJob[]) {
   }
 }
 
-function renderSearchBar(passes: BoardingPass[]) {
+function renderSearchBar(passes: BoardingPass[], upcoming: FlightSummary[] = []) {
   searchBarEl.innerHTML = "";
-  if (passes.length < SEARCH_MIN_PASSES) return;
+  if (passes.length + upcoming.length < SEARCH_MIN_ROWS) return;
 
   const input = document.createElement("input");
   input.type = "search";
   input.className = "search-input";
-  input.placeholder = "Search by name or reference...";
+  input.placeholder = "Search by name, reference, route or flight...";
   input.autocomplete = "off";
   input.spellcheck = false;
 
   const emptyHint = document.createElement("div");
   emptyHint.className = "search-empty";
-  emptyHint.textContent = "No passes match your search 🦆";
+  emptyHint.textContent = "Nothing matches your search 🦆";
   emptyHint.style.display = "none";
 
   const autoOpened = new Set<HTMLButtonElement>();
@@ -751,37 +753,40 @@ function renderSearchBar(passes: BoardingPass[]) {
   input.addEventListener("input", () => {
     const query = input.value.trim().toLowerCase();
     const tokens = query.split(/\s+/).filter(Boolean);
-    const rows = passesEl.querySelectorAll<HTMLElement>(".pass");
-    const visible: HTMLElement[] = [];
+    const visiblePasses: HTMLElement[] = [];
+    let visibleRows = 0;
 
-    rows.forEach((row) => {
+    // Passes and upcoming flights filter alike; only the passes feed the bulk buttons.
+    passesEl.querySelectorAll<HTMLElement>(".pass, .flight-summary").forEach((row) => {
       const haystack = row.dataset.search || "";
       const match = tokens.length === 0 || tokens.every((t) => haystack.includes(t));
       row.style.display = match ? "" : "none";
-      if (match) visible.push(row);
+      if (!match) return;
+      visibleRows++;
+      if (row.classList.contains("pass")) visiblePasses.push(row);
     });
 
-    emptyHint.style.display = query !== "" && visible.length === 0 ? "" : "none";
+    emptyHint.style.display = query !== "" && visibleRows === 0 ? "" : "none";
 
     // A running bulk download owns the button's label and disabled state.
     const bulkBtn = document.getElementById("btn-download-all") as HTMLButtonElement | null;
     if (bulkBtn && !bulkRunning) {
       bulkBtn.textContent = query === ""
         ? "Download All Passes"
-        : `Download Results (${visible.length})`;
-      bulkBtn.disabled = visible.length === 0;
+        : `Download Results (${visiblePasses.length})`;
+      bulkBtn.disabled = visiblePasses.length === 0;
     }
 
     const printBtn = document.getElementById("btn-print-all") as HTMLButtonElement | null;
     if (printBtn) {
-      printBtn.textContent = query === "" ? "Print all" : `Print Results (${visible.length})`;
-      printBtn.disabled = visible.length === 0;
+      printBtn.textContent = query === "" ? "Print all" : `Print Results (${visiblePasses.length})`;
+      printBtn.disabled = visiblePasses.length === 0;
     }
 
-    const isSingleMatch = query !== "" && visible.length === 1;
+    const isSingleMatch = query !== "" && visiblePasses.length === 1;
 
     if (isSingleMatch) {
-      const showBtn = visible[0].querySelector<HTMLButtonElement>(
+      const showBtn = visiblePasses[0].querySelector<HTMLButtonElement>(
         'button[data-action="qr"]'
       );
       if (showBtn && showBtn.textContent === "Show Ticket") {
@@ -1010,6 +1015,10 @@ function renderFlights(flights: FlightSummary[]) {
     const timeStr = flightDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
     details.textContent = `${flight.flightNumber} · ${dateStr} ${timeStr}`;
 
+    row.dataset.search = [
+      flight.pnr, flight.origin, flight.destination, flight.flightNumber, dateStr, meta.textContent,
+    ].join(" ").toLowerCase();
+
     row.appendChild(header);
     row.appendChild(meta);
     row.appendChild(details);
@@ -1040,12 +1049,12 @@ async function fetchPasses() {
       bulkActionsEl.innerHTML = "";
       searchBarEl.innerHTML = "";
 
+      const upcoming = cachedData.flights.filter(f => !f.isReady);
       if (cachedData.passes.length > 0) {
         renderPasses(cachedData.passes, cachedData.downloadPayloads);
         renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
-        renderSearchBar(cachedData.passes);
       }
-      const upcoming = cachedData.flights.filter(f => !f.isReady);
+      renderSearchBar(cachedData.passes, upcoming);
       if (upcoming.length > 0) {
         renderFlights(upcoming);
       }
@@ -1074,13 +1083,12 @@ async function fetchPasses() {
       bulkActionsEl.innerHTML = "";
       searchBarEl.innerHTML = "";
 
+      const upcoming = flights.filter(f => !f.isReady);
       if (passes.length > 0) {
         renderPasses(passes, payloads);
         renderBulkActions(passes, payloads);
-        renderSearchBar(passes);
       }
-
-      const upcoming = flights.filter(f => !f.isReady);
+      renderSearchBar(passes, upcoming);
       if (upcoming.length > 0) {
         renderFlights(upcoming);
       }
@@ -1120,12 +1128,12 @@ async function fetchPasses() {
         bulkActionsEl.innerHTML = "";
         searchBarEl.innerHTML = "";
 
+        const upcoming = cachedData.flights.filter(f => !f.isReady);
         if (cachedData.passes.length > 0) {
           renderPasses(cachedData.passes, cachedData.downloadPayloads);
           renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
-          renderSearchBar(cachedData.passes);
         }
-        const upcoming = cachedData.flights.filter(f => !f.isReady);
+        renderSearchBar(cachedData.passes, upcoming);
         if (upcoming.length > 0) {
           renderFlights(upcoming);
         }
@@ -1208,7 +1216,7 @@ function revealDiagnosticReport(json: string) {
   pre.textContent = json;
 
   details.append(summary, pre);
-  bulkActionsEl.appendChild(details);
+  (statusBarEl ?? bulkActionsEl).prepend(details);
 }
 
 async function copyDiagnosticReport() {
@@ -1228,7 +1236,7 @@ async function copyDiagnosticReport() {
     revealDiagnosticReport(json);
 
     await navigator.clipboard.writeText(json);
-    setStatus("Diagnostic report copied — paste it into the GitHub issue");
+    setStatus("Diagnostic report copied");
   } catch (error) {
     setStatus(`Could not copy the report: ${errorText(error)}`);
   }
@@ -1236,21 +1244,23 @@ async function copyDiagnosticReport() {
 
 /**
  * The report describes what Ryanair answered, which is only ever needed when
- * something is missing from the list — so it lives in the tab view, where there
- * is room for it, and stays out of the popup entirely.
+ * something is missing from the list. So: an icon in the corner of the status
+ * bar, in the tab view only, and nothing in the popup.
  */
 function renderDiagnosticsControl() {
   if (!isTabView()) return;
+  document.getElementById("btn-copy-diagnostics")?.remove();
 
   const button = document.createElement("button");
   button.type = "button";
   button.id = "btn-copy-diagnostics";
   button.className = "btn-copy-diagnostics";
-  button.textContent = "Copy diagnostic report";
-  button.title = "Copy a description of what Ryanair answered — counts and field names, no flight details";
+  button.textContent = "🩺";
+  button.setAttribute("aria-label", "Copy diagnostic report");
+  button.title = "Copy diagnostic report: what Ryanair answered, as counts and field names. No flight details.";
   button.addEventListener("click", () => { void copyDiagnosticReport(); });
 
-  bulkActionsEl.appendChild(button);
+  (statusBarEl ?? bulkActionsEl).appendChild(button);
 }
 
 /* ------------------------------------------------------------------ *

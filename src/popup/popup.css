@@ -56,6 +56,7 @@ button:disabled {
 #status-bar {
   position: sticky;
   bottom: 0;
+
   margin: 12px -12px -12px -12px;
   padding: 8px 12px 10px 12px;
   background: #f6f1e7;
@@ -406,10 +407,33 @@ button:disabled {
   min-width: 0;
 }
 
-/* The report sits under the buttons rather than beside them. */
+/* A small icon in the corner of the status bar, tab view only. */
+.btn-copy-diagnostics {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  width: auto;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+}
+
+.btn-copy-diagnostics:hover,
+.btn-copy-diagnostics:focus-visible {
+  opacity: 1;
+  background: rgba(7, 53, 144, 0.08);
+}
+
+/* The revealed report sits above the count line. */
 .diagnostic-report {
-  flex: 1 0 100%;
   font-size: 12px;
+  margin-bottom: 8px;
+  text-align: left;
 }
 
 .diagnostic-report summary {
