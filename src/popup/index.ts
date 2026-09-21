@@ -1324,6 +1324,33 @@ async function openDiagnosticsDialog() {
  * hides behind the same quiet header link the popup spends on "Open in tab" —
  * and only in the tab view, where that slot is free.
  */
+/**
+ * A ladybird, drawn rather than typed: an emoji renders differently on every
+ * platform, and the reporter who needs this is on Windows. The spots are the
+ * header's own navy, so the shape reads as holes punched through the wing case.
+ */
+const LADYBIRD_SVG = `
+<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+  <path d="M10 3.4 8.5 1.5M14 3.4 15.5 1.5"
+        fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="12" cy="5.6" r="2.9" fill="currentColor"/>
+  <ellipse cx="12" cy="13.4" rx="7.1" ry="8" fill="currentColor"/>
+  <g fill="#073590">
+    <rect x="11.3" y="8.2" width="1.4" height="12.8" rx="0.7"/>
+    <circle cx="8.3" cy="10.6" r="1.5"/>
+    <circle cx="15.7" cy="10.6" r="1.5"/>
+    <circle cx="7.8" cy="15.6" r="1.7"/>
+    <circle cx="16.2" cy="15.6" r="1.7"/>
+    <circle cx="10" cy="19.4" r="1.1"/>
+    <circle cx="14" cy="19.4" r="1.1"/>
+  </g>
+</svg>`;
+
+/**
+ * The report is only ever wanted when a booking is missing, so it sits in the
+ * header slot the popup spends on "Open in tab", as an icon. The words that
+ * explain it live in the tooltip and in the dialog itself.
+ */
 function renderDiagnosticsControl() {
   if (!isTabView()) return;
 
@@ -1336,9 +1363,10 @@ function renderDiagnosticsControl() {
   button.type = "button";
   button.id = "btn-diagnostics";
   button.className = "btn-diagnostics";
-  button.textContent = "Diagnostics";
-  button.setAttribute("aria-label", "Open the diagnostic report");
-  button.title = "What Ryanair answered, as counts and field names. No flight details.";
+  // Static markup, no interpolation: the icon is a constant in this file.
+  button.innerHTML = LADYBIRD_SVG;
+  button.setAttribute("aria-label", "Missing a booking? Open the diagnostic report");
+  button.title = "Missing a booking? Open the diagnostic report";
   button.addEventListener("click", () => { void openDiagnosticsDialog(); });
 
   header.appendChild(button);

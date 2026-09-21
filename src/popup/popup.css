@@ -370,8 +370,7 @@ button:disabled {
   position: relative;
 }
 
-.btn-open-tab,
-.btn-diagnostics {
+.btn-open-tab {
   position: absolute;
   top: 10px;
   right: 12px;
@@ -390,16 +389,39 @@ button:disabled {
   opacity: 0.85;
 }
 
-.btn-open-tab:hover,
+.btn-open-tab:hover {
+  opacity: 1;
+}
+
+/* An 18px icon needs a bigger target than its own box, so the padding carries it. */
+.btn-diagnostics {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: auto;
+  padding: 5px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: #f6c453;
+  line-height: 0;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
 .btn-diagnostics:hover,
 .btn-diagnostics:focus-visible {
   opacity: 1;
+  background: rgba(246, 196, 83, 0.16);
 }
 
 /* The tab view's header carries the centring gutter as padding; the link has to
    follow it or it drifts off to the window edge. */
 body.view-tab .btn-diagnostics {
-  right: max(12px, calc((100% - 720px) / 2));
+  right: calc(max(12px, (100% - 720px) / 2) - 5px);
 }
 
 /* ------------------------------------------------------------------ *
