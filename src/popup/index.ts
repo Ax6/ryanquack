@@ -1332,11 +1332,6 @@ async function openDiagnosticsDialog() {
 }
 
 /**
- * The report is only ever wanted when something is missing from the list, so it
- * hides behind the same quiet header link the popup spends on "Open in tab" —
- * and only in the tab view, where that slot is free.
- */
-/**
  * The report is only ever wanted when something is missing, so it sits in the
  * header slot the popup spends on "Open in tab", in the same quiet style.
  */
