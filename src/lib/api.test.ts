@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchBoardingPass, fetchBoardingPassesInChunks, fetchGoogleWalletToken, downloadPass, fetchOrders, chunkIds, BOARDINGPASSES_HEADERS, BOARDING_PASS_REQUEST_BUDGET, GOOGLE_WALLET_HEADERS } from "./api";
+import { fetchBoardingPass, fetchBoardingPassesInChunks, fetchGoogleWalletToken, downloadPass, fetchOrders, chunkIds, BOARDINGPASSES_HEADERS, MAX_ORDER_PAGES, GOOGLE_WALLET_HEADERS } from "./api";
 import type { ChunkVisit, PageVisit } from "./api";
 import type { DownloadPayload } from "./ryanair";
 
@@ -205,7 +205,6 @@ describe("Order paging", () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(3);
     expect(orders.items.map((item) => item.rawBooking?.bookingId)).toEqual([1, 2, 3]);
-    expect(orders.nextToken).toBeUndefined();
   });
 
   it("should ask for ascending order and send the encoded token only after the first page", async () => {
@@ -260,16 +259,31 @@ describe("Order paging", () => {
     expect(orders.items).toHaveLength(2);
   });
 
-  it("should give up after the page cap when the server never stops", async () => {
+  it("should give up after the page cap when the server never stops, and say so", async () => {
+    // A list cut short must not pass for a complete one.
     let page = 0;
     const mockFetch = vi.fn().mockImplementation(async () => ({
       ok: true,
       json: async () => ({ items: [], nextToken: `page-${page++}` }),
     }));
 
-    await fetchOrders("123", "token", MOCK_URL, mockFetch as any);
+    await expect(
+      fetchOrders("123", "token", MOCK_URL, mockFetch as any)
+    ).rejects.toThrow(`orders did not end after ${MAX_ORDER_PAGES} pages`);
+    expect(mockFetch).toHaveBeenCalledTimes(MAX_ORDER_PAGES);
+  });
 
-    expect(mockFetch).toHaveBeenCalledTimes(50);
+  it("should not quote a body it could not parse", async () => {
+    // The parser's own message carries the start of the body; the report must not.
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON: "<html><body>Jane Doe'); },
+    });
+
+    await expect(
+      fetchOrders("123", "token", MOCK_URL, mockFetch as any)
+    ).rejects.toThrow("orders returned something other than JSON");
   });
 
   it("should surface a 403 on a later page as LOGIN_REQUIRED", async () => {
@@ -391,83 +405,59 @@ describe("Boarding pass chunking", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("should halve a failed chunk and keep the passes of the ids that work", async () => {
-    // Only booking 3 is refused; the other five must not pay for it.
-    const mockFetch = vi.fn().mockImplementation(async (_url, init: RequestInit) => {
-      const bookingIds: number[] = JSON.parse(init.body as string).bookingIds;
-      return bookingIds.includes(3)
-        ? { ok: false, status: 500 }
-        : { ok: true, status: 200, json: async () => bookingIds.map((id) => ({ pnr: `P${id}` })) };
-    });
+  it("should take a 403 with a token as no passes for those bookings, and carry on", async () => {
+    // Ryanair answers 403 for a request none of whose bookings has a pass. With
+    // the ids asked for in chunks, a chunk of bookings still to check in can
+    // draw that answer while the other chunks hold real passes.
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "A" }] })
+      .mockResolvedValueOnce({ ok: false, status: 403 })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "C" }] });
     const visits: ChunkVisit[] = [];
 
     const passes = await fetchBoardingPassesInChunks(
-      { customerId: "123", bookingIds: ids(12), xAuthToken: "token" },
+      { customerId: "123", bookingIds: [1, 2, 3], xAuthToken: "token" },
       MOCK_URL,
       mockFetch as any,
       (visit) => visits.push(visit),
-      6
+      1
     );
 
-    // Every booking but the one Ryanair refuses.
-    expect(passes).toHaveLength(11);
-    expect(passes.map((pass) => (pass as { pnr: string }).pnr)).not.toContain("P3");
-    // Halved down to the single booking that fails, and no further.
-    expect(postedIds(mockFetch)).toEqual([
-      [1, 2, 3, 4, 5, 6], [1, 2, 3], [1, 2], [3], [4, 5, 6], [7, 8, 9, 10, 11, 12],
-    ]);
-    const failures = visits.filter((visit) => visit.error);
-    expect(failures.map((visit) => visit.bookingIds)).toEqual([6, 3, 1]);
+    expect(passes).toEqual([{ pnr: "A" }, { pnr: "C" }]);
+    expect(visits.map((visit) => visit.status)).toEqual([200, 403, 200]);
   });
 
-  it("should report the single booking that failed, so diagnostics can name it", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
-    const visits: ChunkVisit[] = [];
+  it("should hand back no passes, not an error, when every chunk was refused with a token", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 403 });
 
-    await fetchBoardingPassesInChunks(
+    const passes = await fetchBoardingPassesInChunks(
       { customerId: "123", bookingIds: [1, 2], xAuthToken: "token" },
       MOCK_URL,
       mockFetch as any,
-      (visit) => visits.push(visit),
-      2
+      undefined,
+      1
     );
 
-    expect(visits.map((visit) => visit.bookingIds)).toEqual([2, 1, 1]);
-    expect(visits.every((visit) => visit.error?.includes("boardingpasses failed: 500"))).toBe(true);
+    expect(passes).toEqual([]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("should cap the requests an endpoint that fails for everything can cost", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+  it("should raise the failure when no chunk was answered at all", async () => {
+    // The popup retries a shedding endpoint; swallowing every failure would hide it.
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     const visits: ChunkVisit[] = [];
 
-    const passes = await fetchBoardingPassesInChunks(
+    await expect(fetchBoardingPassesInChunks(
       { customerId: "123", bookingIds: ids(40), xAuthToken: "token" },
       MOCK_URL,
       mockFetch as any,
       (visit) => visits.push(visit),
       20
-    );
+    )).rejects.toThrow("boardingpasses failed: 503");
 
-    // Two chunks, four requests each, rather than a request per booking.
-    expect(passes).toEqual([]);
-    expect(mockFetch).toHaveBeenCalledTimes(2 * BOARDING_PASS_REQUEST_BUDGET);
-    expect(visits.filter((visit) => visit.error?.includes("gave up"))).toHaveLength(1);
-  });
-
-  it("should still give up on a 403 in the middle of a bisection", async () => {
-    const mockFetch = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 500 })
-      .mockResolvedValueOnce({ ok: false, status: 403 });
-
-    await expect(fetchBoardingPassesInChunks(
-      { customerId: "123", bookingIds: [1, 2, 3, 4], xAuthToken: null },
-      MOCK_URL,
-      mockFetch as any,
-      undefined,
-      4
-    )).rejects.toThrow("LOGIN_REQUIRED");
-
+    // One request per chunk, none repeated.
     expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(visits.map((visit) => visit.bookingIds)).toEqual([20, 20]);
   });
 
   it("should keep the customer id out of the error it reports", async () => {
@@ -477,12 +467,13 @@ describe("Boarding pass chunking", () => {
     );
     const visits: ChunkVisit[] = [];
 
-    await fetchBoardingPassesInChunks(
+    // The only chunk failed, so the failure is raised; the record of it is clean.
+    await expect(fetchBoardingPassesInChunks(
       { customerId, bookingIds: [1], xAuthToken: "token" },
       MOCK_URL,
       mockFetch as any,
       (visit) => visits.push(visit)
-    );
+    )).rejects.toThrow("NetworkError");
 
     expect(visits[0].error).toBe("NetworkError fetching https://api/orders/<cid>/passes");
   });

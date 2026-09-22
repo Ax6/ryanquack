@@ -81,21 +81,20 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
       customerId
     ),
   };
-  const schema: { details?: unknown; boardingpasses?: unknown } = {};
+  // Every body, shaped together at the end: a key present on nine bookings in
+  // ten only shows up as such when the pages are read as one.
+  const bodies: { details: unknown[]; boardingpasses: unknown[] } = { details: [], boardingpasses: [] };
 
   /** A thrown url carries the customer id, and the report is meant to be postable. */
   const reportableError = (error: unknown) => redactCustomerId(errorText(error), customerId);
 
-  /** Logs the page and keeps a value-free skeleton of the first body it sees. */
   const recordPage = (visit: PageVisit) => {
-    if (endpoints.details.requests.length === 0) schema.details = skeleton(visit.body);
+    bodies.details.push(visit.body);
     endpoints.details.requests.push({ status: visit.status, durationMs: visit.durationMs, items: visit.items });
   };
 
   const recordChunk = (visit: ChunkVisit) => {
-    if (endpoints.boardingpasses.requests.length === 0 && visit.body !== undefined) {
-      schema.boardingpasses = skeleton(visit.body);
-    }
+    if (visit.body !== undefined) bodies.boardingpasses.push(visit.body);
     endpoints.boardingpasses.requests.push({
       status: visit.status,
       durationMs: visit.durationMs,
@@ -141,9 +140,11 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
 
     const result: PassesResult = { flights, passes, downloadPayloads };
 
-    // Cache for offline support
+    // Cache for offline support. A full store must not become an unhandled rejection.
     const cached: CachedPasses = { ...result, cachedAt: Date.now() };
-    browser.storage.local.set({ cachedPasses: cached });
+    browser.storage.local.set({ cachedPasses: cached }).catch((error: unknown) => {
+      console.error("Could not cache the passes", error);
+    });
 
     return result;
   } finally {
@@ -154,7 +155,10 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
         orders,
         list: { flights, readyBookingIds: bookingIds },
         passes,
-        schema,
+        schema: {
+          ...(bodies.details.length ? { details: skeleton(bodies.details) } : {}),
+          ...(bodies.boardingpasses.length ? { boardingpasses: skeleton(bodies.boardingpasses) } : {}),
+        },
       }));
     } catch (error) {
       // A report we could not write must never be why the refresh failed.

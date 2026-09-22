@@ -274,8 +274,6 @@ function tally(counts: Record<string, number>, key: string | null | undefined): 
 }
 
 export interface DetailsItemSummary {
-  tripId: string;
-  productId: string;
   bookingId: string;
   pnr: string;
   type: string;
@@ -300,8 +298,6 @@ export interface DetailsTally {
 
 export interface DetailsSummary {
   items: number;
-  distinctTripIds: number;
-  distinctProductIds: number;
   distinctBookingIds: number;
   tally: DetailsTally;
   entries: DetailsItemSummary[];
@@ -337,8 +333,6 @@ export async function summarizeDetails(
     const legs = raw?.flights ?? [];
 
     return {
-      tripId: await hash(item.tripId),
-      productId: await hash(item.productId),
       bookingId: await hash(bookingId),
       pnr: await hash(pnr),
       type: item.type ?? "",
@@ -362,8 +356,6 @@ export async function summarizeDetails(
 
   return {
     items: items.length,
-    distinctTripIds: countDistinct(items.map((item) => item.tripId)),
-    distinctProductIds: countDistinct(items.map((item) => item.productId)),
     distinctBookingIds: countDistinct(items.map(
       (item) => item.rawBooking?.bookingId ?? item.payload?.booking?.bookingId
     )),

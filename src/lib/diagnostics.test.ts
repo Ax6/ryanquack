@@ -280,8 +280,6 @@ describe("summaries", () => {
 
     expect(summary).toMatchObject({
       items: 2,
-      distinctTripIds: 2,
-      distinctProductIds: 2,
       distinctBookingIds: 2,
       tally: {
         types: { flight: 2 },
@@ -293,7 +291,6 @@ describe("summaries", () => {
     });
     expect(summary.entries[0]).toEqual({
       type: "flight",
-      tripId: await hash("trip-1"),
       bookingId: await hash(1000),
       pnr: await hash(SEED_PNR),
       source: "rawBooking",
@@ -301,7 +298,6 @@ describe("summaries", () => {
       flownLegs: 0,
       parsedLegs: 1,
       checkins: ["checkin"],
-      productId: await hash("1000"),
     });
     // Read from the payload: no raw legs to count, one row all the same.
     expect(summary.entries[1]).toMatchObject({
@@ -596,10 +592,10 @@ describe("keeping the report postable", () => {
     expect(summary.entriesTruncated).toBe(180);
     // The two worth reading, plus the first eighteen, in the order they arrived.
     expect(summary.entries.filter((entry) => entry.source === "payload")).toHaveLength(2);
-    expect(summary.entries[0].tripId).toBe(await hash("trip-0"));
-    expect(summary.entries[17].tripId).toBe(await hash("trip-17"));
-    expect(summary.entries[18].tripId).toBe(await hash("trip-190"));
-    expect(summary.entries[19].tripId).toBe(await hash("trip-199"));
+    expect(summary.entries[0].bookingId).toBe(await hash(1000));
+    expect(summary.entries[17].bookingId).toBe(await hash(1017));
+    expect(summary.entries[18].bookingId).toBe(await hash(1190));
+    expect(summary.entries[19].bookingId).toBe(await hash(1199));
     expect(summary.tally.rawBookingFailures).toBe(2);
   });
 });
