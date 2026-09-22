@@ -102,6 +102,12 @@ export interface FlightSummary {
    * and never a missing booking.
    */
   isReady: boolean;
+  /**
+   * Every passenger on this leg has checked in. False when someone has not, so
+   * the leg stays in the upcoming list even once a pass for another passenger
+   * arrives; absent when the listing did not say.
+   */
+  allCheckedIn?: boolean;
   checkInOpenUTC?: string;
   checkInCloseUTC?: string;
   /** When check-in opens for a passenger who has not bought a seat. */
@@ -159,13 +165,17 @@ export interface LegCheckin {
   status: string;
   /** Whether to ask the pass endpoint about the booking. */
   ready: boolean;
+  /** Every passenger has checked in; absent when the listing said nothing. */
+  allCheckedIn?: boolean;
   /** Every passenger has flown this leg, so it is not upcoming. */
   flown: boolean;
 }
 
 /**
- * Folds the per-passenger records of one leg into one state. The most advanced
- * passenger wins, because a pass for any of them is worth fetching.
+ * Folds the per-passenger records of one leg into one state. A pass for any
+ * passenger is worth fetching, so one checked-in passenger makes the leg ready;
+ * but one passenger who has not checked in keeps the leg in the upcoming list,
+ * labelled with what is still missing, whatever the others did.
  */
 export function classifyLeg(statuses: Array<string | null | undefined>): LegCheckin {
   const seen = statuses
@@ -176,11 +186,14 @@ export function classifyLeg(statuses: Array<string | null | undefined>): LegChec
   if (seen.every((status) => status === FLOWN)) return { status: FLOWN, ready: false, flown: true };
 
   const live = seen.filter((status) => status !== FLOWN);
-  const checkedIn = live.find((status) => !NOT_CHECKED_IN.has(status));
-  if (checkedIn) return { status: checkedIn, ready: true, flown: false };
-  if (live.includes("documentsadded")) return { status: "documentsadded", ready: true, flown: false };
+  const checkedIn = live.filter((status) => !NOT_CHECKED_IN.has(status));
+  if (checkedIn.length === live.length) {
+    return { status: checkedIn[0], ready: true, allCheckedIn: true, flown: false };
+  }
 
-  return { status: "nocheckin", ready: false, flown: false };
+  const status = live.includes("nocheckin") ? "nocheckin" : "documentsadded";
+  const ready = checkedIn.length > 0 || status === "documentsadded";
+  return { status, ready, allCheckedIn: false, flown: false };
 }
 
 type RawBooking = NonNullable<OrderItem["rawBooking"]>;
@@ -204,7 +217,8 @@ function hasSeatOn(raw: RawBooking, journeyNum: number): boolean {
 export type BookingSource = "rawBooking" | "payload" | "none";
 
 export function bookingSource(item: OrderItem): BookingSource {
-  if (item.rawBooking?.flights) return "rawBooking";
+  // An empty array is as useless as a missing one, so it falls through too.
+  if (item.rawBooking?.flights?.length) return "rawBooking";
   if (item.payload?.booking?.journeys) return "payload";
   return "none";
 }
@@ -223,6 +237,7 @@ function flightsFromRawBooking(raw: RawBooking): FlightSummary[] {
       flightNumber: flight.flightNumber,
       checkinStatus: checkin.status,
       isReady: checkin.ready,
+      allCheckedIn: checkin.allCheckedIn,
       checkInOpenUTC: flight.checkInOpenUTC,
       checkInCloseUTC: flight.checkInCloseUTC,
       checkInFreeOpenUTC: flight.checkInFreeAllocateOpenUtcDate,
@@ -261,11 +276,30 @@ function flightsFromPayload(item: OrderItem): FlightSummary[] {
   });
 }
 
+/** The id of the booking an item describes, from whichever part carries it. */
+function itemBookingId(item: OrderItem): number {
+  return Number(item.rawBooking?.bookingId ?? item.payload?.booking?.bookingId);
+}
+
+/**
+ * One row per upcoming leg. A booking repeated across two pages, which a cursor
+ * over a list that changed under it can do, is read once.
+ */
 export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[] {
   if (!orders || !orders.items) return [];
 
-  const flights = orders.items.flatMap((item) =>
-    item.rawBooking?.flights ? flightsFromRawBooking(item.rawBooking) : flightsFromPayload(item));
+  const seen = new Set<number>();
+  const flights = orders.items.flatMap((item) => {
+    const bookingId = itemBookingId(item);
+    if (Number.isFinite(bookingId)) {
+      if (seen.has(bookingId)) return [];
+      seen.add(bookingId);
+    }
+
+    return item.rawBooking?.flights?.length
+      ? flightsFromRawBooking(item.rawBooking)
+      : flightsFromPayload(item);
+  });
 
   return sortFlightsByDeparture(flights);
 }
@@ -283,38 +317,59 @@ function normalizePnr(value: unknown): string {
   return typeof value === "string" ? value.trim().toUpperCase() : "";
 }
 
+function normalizeStation(value: unknown): string {
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
+/**
+ * Passes carry no booking id, so a pass is placed by its record locator and the
+ * airport it leaves from. The return leg of a booking has a different origin
+ * from the outbound, which is what keeps one pass from speaking for both legs.
+ */
 export interface PassMatchIndex {
-  bookingIds: Set<number>;
+  /** `PNR|origin` of every pass that said where it departs. */
+  legs: Set<string>;
+  /** Record locators of passes that did not, matched against any leg of theirs. */
+  unplacedPnrs: Set<string>;
+  /** Every record locator, for a leg that has no origin to match on. */
   pnrs: Set<string>;
 }
 
 export function indexPasses(passes: BoardingPass[]): PassMatchIndex {
-  const bookingIds = new Set<number>();
+  const legs = new Set<string>();
+  const unplacedPnrs = new Set<string>();
   const pnrs = new Set<string>();
 
   for (const pass of passes) {
-    // Undocumented, and absent from every pass we have seen — used when it is there.
-    const bookingId = Number((pass as { bookingId?: unknown }).bookingId);
-    if (Number.isFinite(bookingId)) bookingIds.add(bookingId);
-
     const pnr = normalizePnr(pass.pnr);
-    if (pnr) pnrs.add(pnr);
+    if (!pnr) continue;
+    pnrs.add(pnr);
+
+    const origin = normalizeStation(pass.departure?.code);
+    if (origin) legs.add(`${pnr}|${origin}`);
+    else unplacedPnrs.add(pnr);
   }
 
-  return { bookingIds, pnrs };
+  return { legs, unplacedPnrs, pnrs };
 }
 
+/** Whether one of the passes is for this leg, not merely for its booking. */
 export function hasMatchingPass(flight: FlightSummary, index: PassMatchIndex): boolean {
-  if (index.bookingIds.has(flight.bookingId)) return true;
-
   const pnr = normalizePnr(flight.pnr);
-  return pnr !== "" && index.pnrs.has(pnr);
+  if (!pnr) return false;
+
+  const origin = normalizeStation(flight.origin);
+  if (!origin) return index.pnrs.has(pnr);
+
+  return index.legs.has(`${pnr}|${origin}`) || index.unplacedPnrs.has(pnr);
 }
 
 /**
- * A ready flight is shown through its passes, so a ready flight with no pass
- * would render nowhere. Whatever its status said, it goes back in the upcoming
- * list; this is the invariant that keeps every booking on screen.
+ * A ready flight is shown through its passes, so a ready flight with no pass of
+ * its own would render nowhere. Whatever its status said, it goes back in the
+ * upcoming list; so does a leg one of whose passengers has not checked in, next
+ * to the passes of those who have. This is the invariant that keeps every
+ * booking on screen.
  */
 export function markUnconfirmedFlights(
   flights: FlightSummary[],
@@ -323,7 +378,9 @@ export function markUnconfirmedFlights(
   const index = indexPasses(passes);
 
   return flights.map((flight) =>
-    !flight.isReady || hasMatchingPass(flight, index) ? flight : { ...flight, isReady: false });
+    flight.isReady && flight.allCheckedIn !== false && hasMatchingPass(flight, index)
+      ? flight
+      : { ...flight, isReady: false });
 }
 
 export function filterReadyBookings(flights: FlightSummary[]): number[] {
@@ -347,8 +404,9 @@ export function buildDownloadPayload(passItem: BoardingPass): DownloadPayload {
   return {
     sequenceNumber: String(passItem.sequence),
     lang: "en",
-    arrivalStation: passItem.arrival.code,
-    departureStation: passItem.departure.code,
+    // A pass missing an airport costs a bad payload, not the whole refresh.
+    arrivalStation: passItem.arrival?.code ?? "",
+    departureStation: passItem.departure?.code ?? "",
     recordLocator: passItem.pnr,
     isInfant: isInfant(passItem.paxType)
   };
@@ -432,10 +490,9 @@ export interface OrderItem {
   processingStatus?: { code?: string; reason?: string | null };
 }
 
+/** Every page of the listing, merged. */
 export interface OrderResponse {
   items: OrderItem[];
-  /** Cursor for the next page; absent on the last one. Merged results carry none. */
-  nextToken?: string | null;
 }
 
 function normalizeNamePart(value: unknown): string {

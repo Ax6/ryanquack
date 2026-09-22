@@ -172,33 +172,47 @@ describe("Ryanair Logic", () => {
 
 describe("Check-in status of a leg", () => {
   it("should say a leg nobody has done anything on is not checked in", () => {
-    expect(classifyLeg(["nocheckin"])).toEqual({ status: "nocheckin", ready: false, flown: false });
+    expect(classifyLeg(["nocheckin"]))
+      .toEqual({ status: "nocheckin", ready: false, allCheckedIn: false, flown: false });
     expect(classifyLeg(["nocheckin", "nocheckin", "nocheckin"]))
-      .toEqual({ status: "nocheckin", ready: false, flown: false });
+      .toEqual({ status: "nocheckin", ready: false, allCheckedIn: false, flown: false });
   });
 
   it("should treat travel documents as not checked in, but still worth asking about", () => {
     // Ryanair's first check-in step. It produces no boarding pass, which the
     // reconcile discovers, so asking costs one request and never a booking.
-    expect(classifyLeg(["documentsadded"])).toEqual({ status: "documentsadded", ready: true, flown: false });
-    expect(classifyLeg(["nocheckin", "documentsadded", "nocheckin"]))
-      .toEqual({ status: "documentsadded", ready: true, flown: false });
+    expect(classifyLeg(["documentsadded"]))
+      .toEqual({ status: "documentsadded", ready: true, allCheckedIn: false, flown: false });
+    expect(classifyLeg(["documentsadded", "documentsadded"]))
+      .toEqual({ status: "documentsadded", ready: true, allCheckedIn: false, flown: false });
   });
 
-  it("should let the most advanced passenger decide", () => {
+  it("should say a leg every passenger has checked in on is checked in", () => {
+    expect(classifyLeg(["checkin", "checkin"]))
+      .toEqual({ status: "checkin", ready: true, allCheckedIn: true, flown: false });
+  });
+
+  it("should keep a leg in the list while anyone on it has not checked in", () => {
+    // The passes of those who have are still fetched; the label says what is
+    // missing for the rest, so a family of three with one pass sees the leg.
     expect(classifyLeg(["nocheckin", "checkin", "documentsadded"]))
-      .toEqual({ status: "checkin", ready: true, flown: false });
+      .toEqual({ status: "nocheckin", ready: true, allCheckedIn: false, flown: false });
+    expect(classifyLeg(["checkin", "documentsadded"]))
+      .toEqual({ status: "documentsadded", ready: true, allCheckedIn: false, flown: false });
+    expect(classifyLeg(["nocheckin", "documentsadded", "nocheckin"]))
+      .toEqual({ status: "nocheckin", ready: false, allCheckedIn: false, flown: false });
   });
 
   it("should treat a status it has never seen as possibly holding a pass", () => {
-    expect(classifyLeg(["Boarded"])).toEqual({ status: "boarded", ready: true, flown: false });
+    expect(classifyLeg(["Boarded"])).toEqual({ status: "boarded", ready: true, allCheckedIn: true, flown: false });
   });
 
   it("should mark a leg every passenger has flown", () => {
     expect(classifyLeg(["flown"])).toEqual({ status: "flown", ready: false, flown: true });
     expect(classifyLeg(["flown", "flown"])).toEqual({ status: "flown", ready: false, flown: true });
     // One passenger still to fly is a leg still to fly.
-    expect(classifyLeg(["flown", "nocheckin"])).toEqual({ status: "nocheckin", ready: false, flown: false });
+    expect(classifyLeg(["flown", "nocheckin"]))
+      .toEqual({ status: "nocheckin", ready: false, allCheckedIn: false, flown: false });
   });
 
   it("should ask about a leg with no records at all rather than assume", () => {
@@ -213,8 +227,8 @@ describe("Reading the orders listing", () => {
   });
 
   it("should read every passenger's record for the leg, not the first one's", () => {
-    // A group of nine with documents added: the first record decided before,
-    // which hid six of a reporter's seven bookings on one flight.
+    // One of two has checked in: their pass is worth fetching, and the leg stays
+    // listed for the other. Reading only the first record missed both.
     const [flight] = extractFlightsFromOrders({ items: [{ rawBooking: {
       bookingId: 1, recordLocator: "GROUP1",
       flights: [leg(0, "2026-09-22T06:00:00Z")],
@@ -224,7 +238,7 @@ describe("Reading the orders listing", () => {
       ],
     } }] });
 
-    expect(flight).toMatchObject({ checkinStatus: "checkin", isReady: true });
+    expect(flight).toMatchObject({ checkinStatus: "nocheckin", isReady: true, allCheckedIn: false });
   });
 
   it("should drop a leg that has flown and keep the one still to come", () => {
@@ -288,6 +302,31 @@ describe("Reading the orders listing", () => {
     expect(bookingSource(item)).toBe("none");
     expect(extractFlightsFromOrders({ items: [item] })).toEqual([]);
     expect(extractFlightsFromOrders({ items: [{ payload: { booking: { pnr: "NOID00", journeys: [] } } }] })).toEqual([]);
+  });
+
+  it("should fall back to the payload when the raw booking lists no flights at all", () => {
+    // An empty array is truthy; it must not count as a booking that was read.
+    const item: OrderItem = {
+      rawBooking: { bookingId: 7, recordLocator: "EMPTY1", flights: [], checkins: [] },
+      payload: { booking: { bookingId: 7, pnr: "EMPTY1", journeys: [{ segments: [
+        { origin: "STN", destination: "DUB", flightNumber: "FR9", departureTime: "2026-10-10T06:00:00Z" },
+      ] }] } },
+    };
+
+    expect(bookingSource(item)).toBe("payload");
+    expect(extractFlightsFromOrders({ items: [item] })).toHaveLength(1);
+  });
+
+  it("should read a booking repeated across two pages once", () => {
+    // A cursor over a list that changes under it can hand the seam back twice.
+    const item: OrderItem = {
+      rawBooking: { bookingId: 1, recordLocator: "TWICE1", flights: [leg(0, "2026-09-22T06:00:00Z")], checkins: [] },
+    };
+
+    const flights = extractFlightsFromOrders({ items: [item, { ...item }] });
+
+    expect(flights).toHaveLength(1);
+    expect(filterReadyBookings(flights)).toEqual([1]);
   });
 });
 
@@ -523,13 +562,54 @@ describe("Reconciling the list against the passes", () => {
     expect(marked[0].isReady).toBe(true);
   });
 
-  it("should match on the booking id when the pass carries one", () => {
+  it("should not let the outbound pass speak for the return leg", () => {
+    // Outbound checked in, return with documents added: one pass comes back,
+    // for the outbound. Matching by booking alone hid the return leg entirely.
     const marked = markUnconfirmedFlights(
-      [flight({ bookingId: 9001, pnr: "GROUP1" }), flight({ bookingId: 9002, pnr: "GROUP2" })],
-      [pass({ bookingId: 9001, pnr: "SOMETHINGELSE" })]
+      [
+        flight({ bookingId: 500, pnr: "QWE123", origin: "STN", destination: "DUB", checkinStatus: "checkin", allCheckedIn: true }),
+        flight({ bookingId: 500, pnr: "QWE123", origin: "DUB", destination: "STN", checkinStatus: "documentsadded", allCheckedIn: false }),
+      ],
+      [pass({ pnr: "QWE123", departure: { code: "STN" } })]
     );
 
     expect(marked.map(f => f.isReady)).toEqual([true, false]);
+  });
+
+  it("should match a leg by where its pass departs, whatever the case", () => {
+    const flights = [
+      flight({ bookingId: 1, pnr: "ABC123", origin: "STN", allCheckedIn: true }),
+      flight({ bookingId: 1, pnr: "ABC123", origin: "DUB", allCheckedIn: true }),
+    ];
+
+    const marked = markUnconfirmedFlights(flights, [
+      pass({ pnr: "abc123", departure: { code: "stn" } }),
+      pass({ pnr: "ABC123", departure: { code: " DUB " } }),
+    ]);
+
+    expect(marked.map(f => f.isReady)).toEqual([true, true]);
+  });
+
+  it("should let a pass that does not say where it departs cover any leg of its booking", () => {
+    // Stricter matching than the data allows would list the leg twice, which is
+    // visible; but a pass with no station is matched the old way rather than dropped.
+    const marked = markUnconfirmedFlights(
+      [flight({ bookingId: 1, pnr: "GROUP1", origin: "STN", allCheckedIn: true })],
+      [pass({ pnr: "GROUP1" })]
+    );
+
+    expect(marked[0].isReady).toBe(true);
+  });
+
+  it("should keep a leg in the list while a passenger on it has no pass", () => {
+    // Two of three checked in: their passes show, and so does the leg, labelled
+    // with what the third still has to do.
+    const marked = markUnconfirmedFlights(
+      [flight({ bookingId: 1, pnr: "FAM001", origin: "STN", checkinStatus: "nocheckin", allCheckedIn: false })],
+      [pass({ pnr: "FAM001", departure: { code: "STN" } }), pass({ pnr: "FAM001", departure: { code: "STN" } })]
+    );
+
+    expect(marked[0].isReady).toBe(false);
   });
 
   it("should flip a details flight whose pass never came back, whatever its status said", () => {
@@ -595,5 +675,16 @@ describe("Reconciling the list against the passes", () => {
     ];
 
     expect(rendersSomewhere(flights, passes.map(pass))).toBe(true);
+  });
+});
+
+describe("Download payload", () => {
+  it("should survive a pass missing an airport rather than fail the whole refresh", () => {
+    const pass = { pnr: "MOCK01", sequence: 3, paxType: "ADT", departure: { code: "DUB" } } as unknown as BoardingPass;
+
+    expect(buildDownloadPayload(pass)).toEqual({
+      sequenceNumber: "3", lang: "en", arrivalStation: "", departureStation: "DUB",
+      recordLocator: "MOCK01", isInfant: false,
+    });
   });
 });

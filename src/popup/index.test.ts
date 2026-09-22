@@ -314,6 +314,22 @@ describe("upcoming flight labels", () => {
     ]);
   });
 
+  it("should tell a passenger with a seat when free check-in opens if the paid window is missing", async () => {
+    // The two dates come from different parts of the listing; one can be absent.
+    expect(await render([
+      flight({ checkinStatus: "nocheckin", hasSeat: true, checkInFreeOpenUTC: "2026-09-21T06:00:00Z" }),
+    ])).toEqual(["Check-in open"]);
+  });
+
+  it("should print the flight number alone for a leg the listing did not date", async () => {
+    await render([flight({ checkinStatus: "nocheckin", date: "" })]);
+
+    const row = document.querySelector<HTMLElement>(".flight-summary")!;
+    expect(row.children[2].textContent).toBe("FR1000");
+    expect(row.textContent).not.toContain("Invalid");
+    expect(row.dataset.search).not.toContain("invalid");
+  });
+
   it("should make a status it has never seen readable rather than print Ryanair's token", async () => {
     expect(await render([
       flight({ checkinStatus: "closed" }),

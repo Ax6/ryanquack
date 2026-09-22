@@ -952,7 +952,8 @@ function formatShortDateTime(date: Date): string {
 function checkinWindowLabel(flight: FlightSummary, now: Date): string {
   const paid = parseDate(flight.checkInOpenUTC);
   const free = parseDate(flight.checkInFreeOpenUTC);
-  const opens = flight.hasSeat ? paid : free ?? paid;
+  // Whichever window applies, the other is better than saying nothing.
+  const opens = flight.hasSeat ? paid ?? free : free ?? paid;
   const closes = parseDate(flight.checkInCloseUTC);
 
   if (closes && now > closes) return "Check-in closed";
@@ -1009,13 +1010,15 @@ function renderFlights(flights: FlightSummary[]) {
     const details = document.createElement("div");
     details.style.fontSize = "11px";
     details.style.marginTop = "4px";
-    const flightDate = new Date(flight.date);
-    const dateStr = flightDate.toLocaleDateString("en-GB");
-    const timeStr = flightDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-    details.textContent = `${flight.flightNumber} · ${dateStr} ${timeStr}`;
+    // A leg the listing did not date shows its flight number alone.
+    const flightDate = parseDate(flight.date);
+    const when = flightDate
+      ? `${flightDate.toLocaleDateString("en-GB")} ${flightDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
+      : "";
+    details.textContent = [flight.flightNumber, when].filter(Boolean).join(" · ");
 
     row.dataset.search = [
-      flight.pnr, flight.origin, flight.destination, flight.flightNumber, dateStr, meta.textContent,
+      flight.pnr, flight.origin, flight.destination, flight.flightNumber, when, meta.textContent,
     ].join(" ").toLowerCase();
 
     row.appendChild(header);
@@ -1023,6 +1026,29 @@ function renderFlights(flights: FlightSummary[]) {
     row.appendChild(details);
     passesEl.appendChild(row);
   });
+}
+
+/**
+ * Draws the whole list from one result, cached or fresh: passes first, then the
+ * upcoming legs, then the count line. Returns the upcoming legs, which the
+ * caller's status line is chosen by.
+ */
+function renderList(result: PassesResult): FlightSummary[] {
+  passesEl.innerHTML = "";
+  bulkActionsEl.innerHTML = "";
+  searchBarEl.innerHTML = "";
+
+  const { flights, passes, downloadPayloads } = result;
+  const upcoming = flights.filter((flight) => !flight.isReady);
+  if (passes.length > 0) {
+    renderPasses(passes, downloadPayloads);
+    renderBulkActions(passes, downloadPayloads);
+  }
+  renderSearchBar(passes, upcoming);
+  if (upcoming.length > 0) renderFlights(upcoming);
+  setSummary(flights, passes);
+
+  return upcoming;
 }
 
 async function fetchPasses() {
@@ -1044,21 +1070,7 @@ async function fetchPasses() {
   if (cachedData) {
     const isFresh = cachedData.cachedAt && (Date.now() - cachedData.cachedAt) < CACHE_TTL_MS;
     if (isFresh) {
-      passesEl.innerHTML = "";
-      bulkActionsEl.innerHTML = "";
-      searchBarEl.innerHTML = "";
-
-      const upcoming = cachedData.flights.filter(f => !f.isReady);
-      if (cachedData.passes.length > 0) {
-        renderPasses(cachedData.passes, cachedData.downloadPayloads);
-        renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
-      }
-      renderSearchBar(cachedData.passes, upcoming);
-      if (upcoming.length > 0) {
-        renderFlights(upcoming);
-      }
-      renderDiagnosticsControl();
-      setSummary(cachedData.flights, cachedData.passes);
+      renderList(cachedData);
 
       setStatus("Offline Mode ☁️");
     }
@@ -1078,22 +1090,7 @@ async function fetchPasses() {
     // A bulk run holds row indexes into the list it started with, so a run in
     // progress owns the DOM; the fresh list is applied once it finishes.
     whenBulkIdle((deferred) => {
-      passesEl.innerHTML = "";
-      bulkActionsEl.innerHTML = "";
-      searchBarEl.innerHTML = "";
-
-      const upcoming = flights.filter(f => !f.isReady);
-      if (passes.length > 0) {
-        renderPasses(passes, payloads);
-        renderBulkActions(passes, payloads);
-      }
-      renderSearchBar(passes, upcoming);
-      if (upcoming.length > 0) {
-        renderFlights(upcoming);
-      }
-      // Offered even with nothing to show: an empty list is the report's whole point.
-      renderDiagnosticsControl();
-      setSummary(flights, passes);
+      const upcoming = renderList({ flights, passes, downloadPayloads: payloads });
 
       // Only the completed refresh can trigger automatic printing. The
       // optimistic cache may still contain an old seat or barcode.
@@ -1122,23 +1119,7 @@ async function fetchPasses() {
       return;
     } else if (cachedData) {
       // Network failed but we have a cache — render it regardless of TTL
-      if (passesEl.innerHTML === "") {
-        passesEl.innerHTML = "";
-        bulkActionsEl.innerHTML = "";
-        searchBarEl.innerHTML = "";
-
-        const upcoming = cachedData.flights.filter(f => !f.isReady);
-        if (cachedData.passes.length > 0) {
-          renderPasses(cachedData.passes, cachedData.downloadPayloads);
-          renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
-        }
-        renderSearchBar(cachedData.passes, upcoming);
-        if (upcoming.length > 0) {
-          renderFlights(upcoming);
-        }
-        renderDiagnosticsControl();
-        setSummary(cachedData.flights, cachedData.passes);
-      }
+      if (passesEl.innerHTML === "") renderList(cachedData);
       if (autoPrintPending) {
         autoPrintPending = false;
         restorePrintQuery();
@@ -1243,7 +1224,6 @@ function buildDiagnosticsDialog(json: string | null): HTMLDialogElement {
   const copy = document.createElement("button");
   copy.type = "button";
   copy.id = "btn-copy-diagnostics";
-  copy.className = "btn-copy-diagnostics";
   copy.textContent = "Copy";
 
   const close = document.createElement("button");
@@ -1581,5 +1561,7 @@ function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
 
 applyViewMode();
 renderOpenInTabControl();
+// Offered even with nothing to show: an empty list is the report's whole point.
+renderDiagnosticsControl();
 
 fetchPasses();

@@ -239,9 +239,18 @@ function failedItem(booking) {
 }
 
 /** Sorted soonest-first, the way the server answers `order=ASC`. */
-export function reporterAccount({ now = Date.now(), withFailure = false } = {}) {
+export function reporterAccount({ now = Date.now(), withFailure = false, withMixed = false } = {}) {
   const random = rng(7);
-  const bookings = planBookings(now).map((spec, index) => buildBooking(spec, index, now, random));
+  const plan = planBookings(now);
+  if (withMixed) {
+    // Outbound checked in, return with documents added: one pass comes back and
+    // the return leg has to stay in the list next to it.
+    plan.push({ key: "MIXED", pax: 1, legs: [
+      { depart: now + 5 * HOUR, statuses: ["checkin"] },
+      { depart: now + 3 * DAY + 7 * HOUR, statuses: ["documentsadded"] },
+    ] });
+  }
+  const bookings = plan.map((spec, index) => buildBooking(spec, index, now, random));
   bookings.sort((a, b) => Date.parse(a.flights[0].times.departUTC) - Date.parse(b.flights[0].times.departUTC));
 
   let items = bookings.map((booking) => booking.item);

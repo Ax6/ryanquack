@@ -9,6 +9,8 @@ let currentScenario = "REPORTER";
 const barcodelessPasses = new Set();
 /** Adds one item Ryanair failed to load the booking for, to exercise the fallback. */
 let withFailure = false;
+/** Adds a booking whose outbound is checked in and whose return only has documents added. */
+let withMixed = false;
 /** Hands the second pass out without a barcode, the state the popup has to guard. */
 let barcodeless = false;
 /** The CUSTOM scenario: so many checked-in bookings, so many upcoming, one passenger each. */
@@ -34,7 +36,7 @@ function decodeNextToken(token) {
  */
 function account() {
   if (currentScenario === "CUSTOM") return customAccount({ passes: passesCount, upcoming: upcomingCount });
-  return reporterAccount({ withFailure });
+  return reporterAccount({ withFailure, withMixed });
 }
 
 /** Serves `all` one page at a time, the way Ryanair cursors the listing. */
@@ -63,7 +65,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  console.log(`${req.method} ${req.url} [Scenario: ${currentScenario}]${currentScenario === "CUSTOM" ? ` (P:${passesCount}, U:${upcomingCount})` : ""}${withFailure ? " +failure" : ""}${barcodeless ? " +barcodeless" : ""}`);
+  console.log(`${req.method} ${req.url} [Scenario: ${currentScenario}]${currentScenario === "CUSTOM" ? ` (P:${passesCount}, U:${upcomingCount})` : ""}${withFailure ? " +failure" : ""}${withMixed ? " +mixed" : ""}${barcodeless ? " +barcodeless" : ""}`);
 
   // Scenario Dashboard
   if (req.url === "/" && req.method === "GET") {
@@ -85,7 +87,9 @@ const server = createServer(async (req, res) => {
             <label><input type="checkbox" id="failure" ${withFailure ? "checked" : ""} onchange="postState({ withFailure: this.checked })">
               Add an item Ryanair failed to load the booking for (payload only)</label><br>
             <label><input type="checkbox" id="barcodeless" ${barcodeless ? "checked" : ""} onchange="postState({ barcodeless: this.checked })">
-              Hand the second pass out without a barcode</label>
+              Hand the second pass out without a barcode</label><br>
+            <label><input type="checkbox" id="mixed" ${withMixed ? "checked" : ""} onchange="postState({ withMixed: this.checked })">
+              Add a booking checked in for the outbound only, with documents added for the return</label>
           </div>
           <div style="margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; max-width: 520px;">
             <p style="margin: 0 0 8px;"><strong>Tickets control.</strong> A plain account with as many checked-in and upcoming bookings as you like, one passenger each.</p>
@@ -134,6 +138,7 @@ const server = createServer(async (req, res) => {
         const payload = JSON.parse(body);
         if (payload.scenario) currentScenario = payload.scenario;
         if (payload.withFailure !== undefined) withFailure = Boolean(payload.withFailure);
+        if (payload.withMixed !== undefined) withMixed = Boolean(payload.withMixed);
         if (payload.barcodeless !== undefined) barcodeless = Boolean(payload.barcodeless);
         if (Number.isInteger(payload.passesCount)) passesCount = Math.max(0, payload.passesCount);
         if (Number.isInteger(payload.upcomingCount)) upcomingCount = Math.max(0, payload.upcomingCount);
