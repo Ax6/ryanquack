@@ -367,24 +367,26 @@ describe("Boarding pass chunking", () => {
     expect(passes[44]).toEqual({ pnr: "P45" });
   });
 
-  it("should keep the other chunks when one fails for a reason other than 403", async () => {
+  it("should fail the whole fetch when one chunk fails for a reason other than 403", async () => {
+    // Handing back the other chunks would look like a full answer: the missing
+    // passes would drop to the upcoming list and replace the cached ones.
     const mockFetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "A" }] })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "C" }] });
     const visits: ChunkVisit[] = [];
 
-    const passes = await fetchBoardingPassesInChunks(
+    await expect(fetchBoardingPassesInChunks(
       { customerId: "123", bookingIds: [1, 2, 3], xAuthToken: "token" },
       MOCK_URL,
       mockFetch as any,
       (visit) => visits.push(visit),
       1
-    );
+    )).rejects.toThrow("boardingpasses failed: 500");
 
-    expect(passes).toEqual([{ pnr: "A" }, { pnr: "C" }]);
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-    expect(visits.map((visit) => visit.status)).toEqual([200, 500, 200]);
+    // The third chunk was never asked for.
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(visits.map((visit) => visit.status)).toEqual([200, 500]);
     expect(visits[1].error).toContain("boardingpasses failed: 500");
   });
 
@@ -442,8 +444,7 @@ describe("Boarding pass chunking", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("should raise the failure when no chunk was answered at all", async () => {
-    // The popup retries a shedding endpoint; swallowing every failure would hide it.
+  it("should stop at the first failed chunk rather than keep asking a shedding endpoint", async () => {
     const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     const visits: ChunkVisit[] = [];
 
@@ -455,9 +456,8 @@ describe("Boarding pass chunking", () => {
       20
     )).rejects.toThrow("boardingpasses failed: 503");
 
-    // One request per chunk, none repeated.
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    expect(visits.map((visit) => visit.bookingIds)).toEqual([20, 20]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(visits.map((visit) => visit.bookingIds)).toEqual([20]);
   });
 
   it("should keep the customer id out of the error it reports", async () => {
@@ -467,7 +467,7 @@ describe("Boarding pass chunking", () => {
     );
     const visits: ChunkVisit[] = [];
 
-    // The only chunk failed, so the failure is raised; the record of it is clean.
+    // The failure is raised; the record of it is clean.
     await expect(fetchBoardingPassesInChunks(
       { customerId, bookingIds: [1], xAuthToken: "token" },
       MOCK_URL,

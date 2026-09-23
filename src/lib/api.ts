@@ -222,12 +222,11 @@ export interface ChunkVisit {
 }
 
 /**
- * Asks for the passes chunk by chunk and concatenates them. A chunk that fails
- * costs its own passes and nothing else: the bookings in it go back to the
- * upcoming list. A 403 with a token is Ryanair saying these bookings have no
- * passes, which is an answer, not a failure; without a token it is the session,
- * and the whole fetch stops. Only when every chunk failed outright is the error
- * raised, so the popup can retry a shedding endpoint the way it always has.
+ * Asks for the passes chunk by chunk and concatenates them. A 403 with a token
+ * is Ryanair saying these bookings have no passes, which is an answer, not a
+ * failure; without a token it is the session, and the whole fetch stops. Any
+ * other failure stops it too: a partial answer would pass for a full one and
+ * overwrite the cached passes, and the popup falls back to that cache on an error.
  * Sequential rather than concurrent — Ryanair sheds bursts of these.
  */
 export async function fetchBoardingPassesInChunks(
@@ -238,15 +237,12 @@ export async function fetchBoardingPassesInChunks(
   size = BOARDING_PASS_CHUNK_SIZE
 ): Promise<BoardingPass[]> {
   const passes: BoardingPass[] = [];
-  let answered = 0;
-  let lastFailure: unknown;
 
   for (const bookingIds of chunkIds(payload.bookingIds, size)) {
     const startedAt = Date.now();
     try {
       const chunk = await fetchBoardingPass({ ...payload, bookingIds }, baseUrl, fetchImpl);
       passes.push(...chunk);
-      answered++;
       onChunk?.({
         bookingIds: bookingIds.length,
         status: 200,
@@ -265,16 +261,9 @@ export async function fetchBoardingPassesInChunks(
         error: redactCustomerId(errorText(error), payload.customerId),
       });
 
-      if (status === 403) {
-        if (!payload.xAuthToken) throw error;
-        answered++;
-      } else {
-        lastFailure = error;
-      }
+      if (status !== 403 || !payload.xAuthToken) throw error;
     }
   }
-
-  if (answered === 0 && lastFailure !== undefined) throw lastFailure;
 
   return passes;
 }
