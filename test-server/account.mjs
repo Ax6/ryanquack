@@ -1,13 +1,7 @@
 /**
- * The account behind issue #20, rebuilt from the reporter's diagnostic report of
- * 2026-09-21: 128 active bookings served in pages of 25, 11 of them with a
- * return leg, groups of up to 13 passengers, most of them with travel documents
- * added and not checked in, one booking checked in with two passes, and one leg
- * already flown. Seven bookings share one flight the next morning, six with
- * documents added and one without — the "7 bookings, shows 1" of the thread.
- *
- * Shapes follow the report's schema skeleton key for key. Values are invented;
- * dates are relative to now so the check-in windows mean something.
+ * A made-up Ryanair account in the shape `/orders/v2/orders/{cid}/details` and
+ * `/v1/boardingpasses` answer with. Values are invented; dates are relative to
+ * now so the check-in windows mean something.
  */
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -15,11 +9,11 @@ const HOUR = 60 * 60 * 1000;
 
 const AIRPORTS = [
   ["STN", "London Stansted"], ["DUB", "Dublin"], ["BGY", "Milan Bergamo"], ["KRK", "Krakow"],
-  ["WAW", "Warsaw Modlin"], ["BCN", "Barcelona"], ["MAD", "Madrid"], ["PMI", "Palma"],
+  ["WMI", "Warsaw Modlin"], ["BCN", "Barcelona"], ["MAD", "Madrid"], ["PMI", "Palma"],
   ["ALC", "Alicante"], ["FAO", "Faro"], ["OPO", "Porto"], ["CIA", "Rome Ciampino"],
 ];
-const FIRST_NAMES = ["Anna", "Piotr", "Marta", "Jakub", "Zofia", "Tomasz", "Ewa", "Marek", "Kasia", "Adam", "Ola", "Paweł", "Julia"];
-const LAST_NAMES = ["Kowalski", "Nowak", "Wiśniewska", "Wójcik", "Kamiński", "Lewandowska", "Zieliński", "Szymańska"];
+const FIRST_NAMES = ["Alex", "Sam", "Maria", "Luca", "Emma", "Noah", "Sofia", "Leo", "Clara", "Hugo"];
+const LAST_NAMES = ["Smith", "Rossi", "Garcia", "Murphy", "Novak", "Silva", "Martin", "Weber"];
 
 /** Deterministic, so two refreshes see the same account. */
 function rng(seed) {
@@ -43,58 +37,62 @@ function pnrAt(index) {
 }
 
 /**
- * The plan: which bookings are ready, how many passengers, how many legs, and
- * when. Counts are chosen so the check-in tally matches the report exactly:
- * checkin 2, documentsadded 34, flown 1, nocheckin 590.
+ * `passes` bookings checked in, departing within hours, one passenger each.
+ * `upcoming` bookings not checked in, cycling through the shapes a real account
+ * has: one-way and return, solo and groups, documents added or not, an outbound
+ * already flown.
  */
-function planBookings(now) {
+function planBookings({ now, passes, upcoming, withMixed }) {
   const random = rng(20);
   const plan = [];
-  const tomorrow06 = Math.floor(now / DAY) * DAY + DAY + 6 * HOUR;
 
-  // A: the checked-in booking, two passengers, two passes. Departs in six hours.
-  plan.push({ key: "A", pax: 2, legs: [{ depart: now + 6 * HOUR, statuses: ["checkin", "checkin"] }] });
-  // B: one passenger, outbound flown yesterday, return in three days with documents added.
-  plan.push({ key: "B", pax: 1, legs: [
-    { depart: now - 1 * DAY, statuses: ["flown"] },
-    { depart: now + 3 * DAY, statuses: ["documentsadded"] },
-  ] });
-  // Seven bookings on the same flight tomorrow morning: six with documents added, one without.
-  const sameFlight = [13, 9, 2, 1, 1, 1];
-  sameFlight.forEach((pax, i) => plan.push({
-    key: `S${i}`, pax, sameFlight: true,
-    legs: [{ depart: tomorrow06, statuses: Array(pax).fill("documentsadded") }],
-  }));
-  plan.push({ key: "S6", pax: 4, sameFlight: true, legs: [{ depart: tomorrow06, statuses: Array(4).fill("nocheckin") }] });
-  // Five more single travellers with documents added over the coming days.
-  for (let i = 0; i < 5; i++) {
-    plan.push({ key: `D${i}`, pax: 1, legs: [{ depart: now + (2 + i) * DAY + 8 * HOUR, statuses: ["documentsadded"] }] });
+  for (let i = 0; i < passes; i++) {
+    plan.push({ pax: 1, legs: [{ depart: now + (i + 1) * 6 * HOUR, statuses: ["checkin"] }] });
   }
-  // One mixed group: the organiser added their own documents, the other has not.
-  plan.push({ key: "M", pax: 2, legs: [{ depart: now + 4 * DAY + 10 * HOUR, statuses: ["nocheckin", "documentsadded"] }] });
-  // documentsadded so far: 1 + (13+9+2+1+1+1) + 5 + 1 = 34. checkin 2, flown 1.
 
-  // The rest: nocheckin only. 128 - 15 = 113 bookings, 10 of them with a return leg,
-  // passenger-leg records summing to 590 - 4 (S6) - 1 (M) = 585.
-  const rest = 128 - plan.length;
-  const twoLeg = 10;
-  let remaining = 585;
-  for (let i = 0; i < rest; i++) {
-    const legsCount = i < twoLeg ? 2 : 1;
-    const left = rest - i - 1;
-    // Keep enough for one passenger per remaining leg, then spread the rest.
-    const minLater = left <= twoLeg - 1 - i ? 0 : 0;
-    const reserve = Array.from({ length: left }, (_, j) => (i + 1 + j < twoLeg ? 2 : 1)).reduce((a, b) => a + b, 0);
-    const maxPax = Math.min(13, Math.floor((remaining - reserve) / legsCount));
-    const pax = i === rest - 1 ? Math.floor(remaining / legsCount) : Math.max(1, Math.min(maxPax, 1 + Math.floor(random() * 6)));
-    remaining -= pax * legsCount;
-    const departOut = now + (1 + Math.floor(random() * 75)) * DAY + (5 + Math.floor(random() * 14)) * HOUR;
-    const legs = [{ depart: departOut, statuses: Array(pax).fill("nocheckin") }];
-    if (legsCount === 2) legs.push({ depart: departOut + (2 + Math.floor(random() * 10)) * DAY, statuses: Array(pax).fill("nocheckin") });
-    plan.push({ key: `N${i}`, pax, legs });
-    void minLater;
+  for (let i = 0; i < upcoming; i++) {
+    const depart = now + (1 + Math.floor(random() * 60)) * DAY + (5 + Math.floor(random() * 14)) * HOUR;
+    const back = depart + (2 + Math.floor(random() * 10)) * DAY;
+    switch (i % 6) {
+      case 0: // Solo, one way.
+        plan.push({ pax: 1, legs: [{ depart, statuses: ["nocheckin"] }] });
+        break;
+      case 1: // Solo with documents added.
+        plan.push({ pax: 1, legs: [{ depart, statuses: ["documentsadded"] }] });
+        break;
+      case 2: { // A group on a return trip.
+        const pax = 2 + Math.floor(random() * 4);
+        plan.push({ pax, legs: [
+          { depart, statuses: Array(pax).fill("nocheckin") },
+          { depart: back, statuses: Array(pax).fill("nocheckin") },
+        ] });
+        break;
+      }
+      case 3: // Outbound flown yesterday, return with documents added.
+        plan.push({ pax: 1, legs: [
+          { depart: now - DAY, statuses: ["flown"] },
+          { depart: now + (2 + i) * DAY, statuses: ["documentsadded"] },
+        ] });
+        break;
+      case 4: // A pair where only one of them has added documents.
+        plan.push({ pax: 2, legs: [{ depart, statuses: ["documentsadded", "nocheckin"] }] });
+        break;
+      default: // Solo on a return trip.
+        plan.push({ pax: 1, legs: [
+          { depart, statuses: ["nocheckin"] },
+          { depart: back, statuses: ["nocheckin"] },
+        ] });
+    }
   }
-  if (remaining !== 0) throw new Error(`reporter plan off by ${remaining} nocheckin records`);
+
+  if (withMixed) {
+    // Outbound checked in, return with documents added: one pass comes back and
+    // the return leg has to stay in the list next to it.
+    plan.push({ pax: 1, legs: [
+      { depart: now + 5 * HOUR, statuses: ["checkin"] },
+      { depart: now + 3 * DAY + 7 * HOUR, statuses: ["documentsadded"] },
+    ] });
+  }
 
   return plan;
 }
@@ -102,9 +100,8 @@ function planBookings(now) {
 function buildBooking(spec, index, now, random) {
   const bookingId = 200_000_000 + index * 37;
   const pnr = pnrAt(index);
-  const [o, d] = spec.sameFlight ? [AIRPORTS[0], AIRPORTS[3]] : [AIRPORTS[index % AIRPORTS.length], AIRPORTS[(index * 5 + 3) % AIRPORTS.length]];
-  const origin = o[0];
-  const destination = d[0];
+  const origin = AIRPORTS[index % AIRPORTS.length][0];
+  const destination = AIRPORTS[(index * 5 + 3) % AIRPORTS.length][0];
   const createdMs = now - (10 + index) * DAY;
 
   const passengers = Array.from({ length: spec.pax }, (_, paxNum) => ({
@@ -118,7 +115,7 @@ function buildBooking(spec, index, now, random) {
 
   const flights = spec.legs.map((leg, journeyNum) => {
     const [from, to] = journeyNum === 0 ? [origin, destination] : [destination, origin];
-    const flightNumber = spec.sameFlight ? "FR2372" : `FR${1000 + ((index * 13 + journeyNum * 7) % 8000)}`;
+    const flightNumber = `FR${1000 + ((index * 13 + journeyNum * 7) % 8000)}`;
     const depart = leg.depart;
     const arrive = depart + 2 * HOUR + 15 * 60 * 1000;
     const times = { depart: iso(depart), departUTC: iso(depart), arrive: iso(arrive), arriveUTC: iso(arrive) };
@@ -143,24 +140,22 @@ function buildBooking(spec, index, now, random) {
   const checkins = spec.legs.flatMap((leg, journeyNum) =>
     leg.statuses.map((status, paxNum) => ({ journeyNum, paxNum, segmentNum: 0, status })));
 
-  // Three seats bought across the first page, as the report showed.
-  const seats = [];
-  if (index === 4) seats.push({ code: "01A", journeyNum: 0, paxNum: 0, qty: 1, segmentNum: 0, type: "SEAT" }, { code: "01B", journeyNum: 0, paxNum: 1, qty: 1, segmentNum: 0, type: "SEAT" });
-  if (index === 9) seats.push({ code: "12F", journeyNum: 0, paxNum: 0, qty: 1, segmentNum: 0, type: "SEAT" });
+  // Every third booking has bought a seat for its first passenger.
+  const seats = index % 3 === 1 ? [{ code: "12F", journeyNum: 0, paxNum: 0, qty: 1, segmentNum: 0, type: "SEAT" }] : [];
 
   const ssrs = passengers.flatMap((pax) => flights.map((flight) => ({
     code: "CBAG", journeyNum: flight.journeyNum, paxNum: pax.paxNum, qty: 1, segmentNum: 0, type: "BAG",
   })));
 
   const total = Math.round((49.99 + random() * 120) * spec.pax * flights.length * 100) / 100;
-  const firstDepart = flights[0].times.departUTC;
+  const expires = iso(spec.legs[spec.legs.length - 1].depart + 2 * DAY);
 
   return {
-    bookingId, pnr, origin, destination, flights, checkins, passengers,
+    bookingId, pnr, flights, checkins, passengers,
     item: {
       correlationId: null,
       customerIds: ["<cid>"],
-      expirationDate: iso(spec.legs[spec.legs.length - 1].depart + 2 * DAY),
+      expirationDate: expires,
       linkedBookings: null,
       payload: {
         __typename: "FlightOrderPayload",
@@ -170,7 +165,7 @@ function buildBooking(spec, index, now, random) {
           bookingDate: iso(createdMs),
           bookingId,
           currency: "EUR",
-          departureDate: firstDepart,
+          departureDate: flights[0].times.departUTC,
           destination,
           expiredDate: null,
           journeys: flights.map((flight) => ({ segments: flight.segments.map((segment) => ({
@@ -201,15 +196,15 @@ function buildBooking(spec, index, now, random) {
         checkins,
         createdDate: iso(createdMs),
         currency: "EUR",
-        email: "reporter@example.com",
-        expiredDate: iso(spec.legs[spec.legs.length - 1].depart + 2 * DAY),
+        email: "traveller@example.com",
+        expiredDate: expires,
         flightTotalAmount: total,
         flights,
         isInTadRefundQueue: false,
         modifiedDate: iso(createdMs + DAY),
         organizationInfo: null,
         passengers,
-        pos: { locationCode: "PL", locationCodeGroup: "PL" },
+        pos: { locationCode: "IE", locationCodeGroup: "IE" },
         recordLocator: pnr,
         seats,
         ssrs,
@@ -223,10 +218,7 @@ function buildBooking(spec, index, now, random) {
   };
 }
 
-/**
- * An item Ryanair failed to load the booking for: `payload` only. Not in the
- * reporter's account, so it is opt-in; it exercises the fallback path.
- */
+/** An item Ryanair failed to load the booking for: `payload` only, no `rawBooking`. */
 function failedItem(booking) {
   const { rawBooking, ...item } = booking.item;
   void rawBooking;
@@ -239,51 +231,26 @@ function failedItem(booking) {
 }
 
 /** Sorted soonest-first, the way the server answers `order=ASC`. */
-export function reporterAccount({ now = Date.now(), withFailure = false, withMixed = false } = {}) {
+export function buildAccount({ now = Date.now(), passes = 2, upcoming = 6, withFailure = false, withMixed = false } = {}) {
   const random = rng(7);
-  const plan = planBookings(now);
-  if (withMixed) {
-    // Outbound checked in, return with documents added: one pass comes back and
-    // the return leg has to stay in the list next to it.
-    plan.push({ key: "MIXED", pax: 1, legs: [
-      { depart: now + 5 * HOUR, statuses: ["checkin"] },
-      { depart: now + 3 * DAY + 7 * HOUR, statuses: ["documentsadded"] },
-    ] });
-  }
-  const bookings = plan.map((spec, index) => buildBooking(spec, index, now, random));
+  const bookings = planBookings({ now, passes, upcoming, withMixed }).map((spec, index) => buildBooking(spec, index, now, random));
   bookings.sort((a, b) => Date.parse(a.flights[0].times.departUTC) - Date.parse(b.flights[0].times.departUTC));
 
   let items = bookings.map((booking) => booking.item);
   if (withFailure) {
     // A booking with two future legs, so the fallback has something to read.
     const source = bookings.find((booking) => booking.flights.length === 2 && booking.checkins.every((c) => c.status === "nocheckin"));
-    const failed = failedItem(source);
-    items = items.map((item) => (item.productId === failed.productId ? failed : item));
+    if (source) {
+      const failed = failedItem(source);
+      items = items.map((item) => (item.productId === failed.productId ? failed : item));
+    }
   }
 
   return { bookings, items };
 }
 
-/**
- * A plain account with a chosen number of checked-in and upcoming bookings, one
- * passenger each, in the same shape as the reporter's. The knobs on the mock
- * dashboard, for looking at the popup with two passes or twenty.
- */
-export function customAccount({ passes = 1, upcoming = 1, now = Date.now() } = {}) {
-  const random = rng(3);
-  const plan = [];
-  for (let i = 0; i < passes; i++) {
-    plan.push({ key: `P${i}`, pax: 1, legs: [{ depart: now + (i + 1) * 6 * HOUR, statuses: ["checkin"] }] });
-  }
-  for (let i = 0; i < upcoming; i++) {
-    plan.push({ key: `U${i}`, pax: 1, legs: [{ depart: now + (i + 2) * DAY + 9 * HOUR, statuses: ["nocheckin"] }] });
-  }
-  const bookings = plan.map((spec, index) => buildBooking(spec, index, now, random));
-  return { bookings, items: bookings.map((booking) => booking.item) };
-}
-
 /** Passes for the requested ids: one per passenger who has checked in, nothing for the rest. */
-export function reporterPasses(account, requestedIds) {
+export function passesFor(account, requestedIds) {
   const wanted = new Set(requestedIds.map(Number));
   const passes = [];
 
@@ -306,8 +273,8 @@ export function reporterPasses(account, requestedIds) {
           businessPlus: false,
           departure: { code: flight.origin, date: flight.times.depart.replace("Z", ""), dateUTC: flight.times.departUTC, dateUTCOffset: "UTC+0000", epoch: depart, name: AIRPORTS.find((a) => a[0] === flight.origin)?.[1] ?? flight.origin },
           discount: "",
-          docCountryOfIssue: "PL",
-          docNationality: "PL",
+          docCountryOfIssue: "IE",
+          docNationality: "IE",
           familyPlus: false,
           fast: false,
           flight: { carrierCode: "FR", label: `FR ${flight.flightNumber.slice(2)}`, number: flight.flightNumber.slice(2), operatedBy: "Ryanair" },
@@ -332,16 +299,4 @@ export function reporterPasses(account, requestedIds) {
   }
 
   return passes;
-}
-
-/** The numbers the report carried, so the mock can be checked against it. */
-export function reporterTally(account) {
-  const checkins = {};
-  for (const booking of account.bookings) for (const c of booking.checkins) checkins[c.status] = (checkins[c.status] ?? 0) + 1;
-  return {
-    bookings: account.bookings.length,
-    legs: account.bookings.reduce((sum, b) => sum + b.flights.length, 0),
-    twoLeg: account.bookings.filter((b) => b.flights.length === 2).length,
-    checkins,
-  };
 }

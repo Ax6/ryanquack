@@ -1,9 +1,9 @@
 import { createServer } from "node:http";
-import { customAccount, reporterAccount, reporterPasses, reporterTally } from "./reporter.mjs";
+import { buildAccount, passesFor } from "./account.mjs";
 
 const PORT = 3000;
 
-let currentScenario = "REPORTER";
+let currentScenario = "ACTIVE";
 // "recordLocator|sequenceNumber" of every pass handed out without a barcode, so
 // /v1/downloadpass can answer the way a real backend plausibly would.
 const barcodelessPasses = new Set();
@@ -13,11 +13,11 @@ let withFailure = false;
 let withMixed = false;
 /** Hands the second pass out without a barcode, the state the popup has to guard. */
 let barcodeless = false;
-/** The CUSTOM scenario: so many checked-in bookings, so many upcoming, one passenger each. */
-let passesCount = 1;
-let upcomingCount = 1;
+/** How many bookings are checked in, and how many are coming up without a pass. */
+let passesCount = 2;
+let upcomingCount = 6;
 
-// Ryanair pages `/details` at 25; the reporter's account came back as 25,25,25,25,25,3.
+// Ryanair pages `/details` at 25 and hands back a nextToken for the rest.
 const ORDERS_PAGE_SIZE = 25;
 
 /** Opaque cursor, like the real one: it only has to survive a round trip. */
@@ -31,12 +31,11 @@ function decodeNextToken(token) {
 }
 
 /**
- * The account is rebuilt per request from the clock, so the flown leg stays in
- * the past and tomorrow's seven bookings stay tomorrow however long the server runs.
+ * The account is rebuilt per request from the clock, so flown legs stay in the
+ * past and check-in windows stay open however long the server runs.
  */
 function account() {
-  if (currentScenario === "CUSTOM") return customAccount({ passes: passesCount, upcoming: upcomingCount });
-  return reporterAccount({ withFailure, withMixed });
+  return buildAccount({ passes: passesCount, upcoming: upcomingCount, withFailure, withMixed });
 }
 
 /** Serves `all` one page at a time, the way Ryanair cursors the listing. */
@@ -65,11 +64,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  console.log(`${req.method} ${req.url} [Scenario: ${currentScenario}]${currentScenario === "CUSTOM" ? ` (P:${passesCount}, U:${upcomingCount})` : ""}${withFailure ? " +failure" : ""}${withMixed ? " +mixed" : ""}${barcodeless ? " +barcodeless" : ""}`);
+  console.log(`${req.method} ${req.url} [Scenario: ${currentScenario}] (P:${passesCount}, U:${upcomingCount})${withFailure ? " +failure" : ""}${withMixed ? " +mixed" : ""}${barcodeless ? " +barcodeless" : ""}`);
 
   // Scenario Dashboard
   if (req.url === "/" && req.method === "GET") {
-    const tally = reporterTally(account());
+    const { bookings } = account();
+    const pages = Math.max(1, Math.ceil(bookings.length / ORDERS_PAGE_SIZE));
     res.setHeader("Content-Type", "text/html");
     res.writeHead(200);
     res.end(`
@@ -79,11 +79,13 @@ const server = createServer(async (req, res) => {
           <h1>Mock Scenario Control</h1>
           <p>Current: <strong>${currentScenario}</strong></p>
           <div style="margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; max-width: 520px;">
-            <p style="margin: 0 0 8px;"><strong>The issue #20 account</strong>, rebuilt from the reporter's diagnostic report:
-            ${tally.bookings} bookings, ${tally.legs} legs (${tally.twoLeg} returns), served in pages of ${ORDERS_PAGE_SIZE}.
-            Check-in records: ${Object.entries(tally.checkins).map(([k, v]) => `${k} ${v}`).join(", ")}.
-            Seven bookings share flight FR2372 tomorrow morning, six with documents added.
-            One booking is checked in with two passes; one leg flew yesterday.</p>
+            <p style="margin: 0 0 8px;"><strong>Active account.</strong> ${bookings.length} bookings, served in ${pages} page${pages === 1 ? "" : "s"} of ${ORDERS_PAGE_SIZE}.
+            The upcoming ones mix one-way and return trips, solo travellers and groups,
+            documents added or not, and an outbound that has already flown.</p>
+            <label>Checked in: <input type="number" id="pCount" value="${passesCount}" min="0" style="width: 60px;"></label>
+            <label>Upcoming: <input type="number" id="uCount" value="${upcomingCount}" min="0" style="width: 60px;"></label>
+            <button onclick="updateCounts()">Use these counts</button>
+            <button onclick="postState({ passesCount: 2, upcomingCount: 120, scenario: 'ACTIVE' })">Many bookings</button><br>
             <label><input type="checkbox" id="failure" ${withFailure ? "checked" : ""} onchange="postState({ withFailure: this.checked })">
               Add an item Ryanair failed to load the booking for (payload only)</label><br>
             <label><input type="checkbox" id="barcodeless" ${barcodeless ? "checked" : ""} onchange="postState({ barcodeless: this.checked })">
@@ -91,15 +93,8 @@ const server = createServer(async (req, res) => {
             <label><input type="checkbox" id="mixed" ${withMixed ? "checked" : ""} onchange="postState({ withMixed: this.checked })">
               Add a booking checked in for the outbound only, with documents added for the return</label>
           </div>
-          <div style="margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; max-width: 520px;">
-            <p style="margin: 0 0 8px;"><strong>Tickets control.</strong> A plain account with as many checked-in and upcoming bookings as you like, one passenger each.</p>
-            <label>Passes: <input type="number" id="pCount" value="${passesCount}" min="0" style="width: 60px;"></label>
-            <label>Upcoming: <input type="number" id="uCount" value="${upcomingCount}" min="0" style="width: 60px;"></label>
-            <button onclick="updateCounts()">Use these counts</button>
-          </div>
           <div style="display: grid; gap: 10px; max-width: 300px;">
-            <button onclick="set('REPORTER')">The reporter's account</button>
-            <button onclick="set('CUSTOM')">Tickets control (uses counts)</button>
+            <button onclick="set('ACTIVE')">Active account (uses counts)</button>
             <button onclick="set('LOGGED_OUT')">Logged Out (403)</button>
             <button onclick="set('NO_FLIGHTS')">No Flights (Empty)</button>
             <button onclick="set('WALLET_ERROR')">Google Wallet Error (500)</button>
@@ -113,7 +108,7 @@ const server = createServer(async (req, res) => {
             function updateCounts() {
               const p = parseInt(document.getElementById('pCount').value);
               const u = parseInt(document.getElementById('uCount').value);
-              postState({ passesCount: p, upcomingCount: u, scenario: 'CUSTOM' });
+              postState({ passesCount: p, upcomingCount: u, scenario: 'ACTIVE' });
             }
             function postState(data) {
               fetch('/test-server/scenario', {
@@ -220,8 +215,7 @@ const server = createServer(async (req, res) => {
   }
 
   // Boarding Passes: one per passenger who has checked in on the requested
-  // bookings, nothing for the rest — which is what a real account answered for
-  // 13 requested bookings (2 passes).
+  // bookings, nothing for the rest.
   if (req.url === "/v1/boardingpasses" && req.method === "POST") {
     if (req.headers["client"] !== "ios") {
       res.writeHead(403); res.end(); return;
@@ -245,7 +239,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const passes = reporterPasses(account(), requestedIds);
+    const passes = passesFor(account(), requestedIds);
     if (barcodeless && passes[1]) passes[1].barcode = null;
     passes.forEach((p) => {
       if (!p.barcode) barcodelessPasses.add(`${p.pnr}|${p.sequence}`);
