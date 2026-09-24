@@ -12,9 +12,9 @@ import browser from "webextension-polyfill";
 import { downloadPass, fetchGoogleWalletToken } from "../lib/api";
 import { mapWithConcurrency, retry } from "../lib/concurrency";
 import { errorStatus, errorText } from "../lib/errors";
-import { buildPassBaseName, buildPassFilename, hasBarcode } from "../lib/ryanair";
+import { buildPassBaseName, buildPassFilename, countBookings, hasBarcode } from "../lib/ryanair";
 import type { BoardingPass, DownloadPayload, FlightSummary } from "../lib/ryanair";
-import type { CachedPasses, PassesResult, RyqMessage } from "../lib/messages";
+import type { CachedPasses, DiagnosticReport, PassesResult, RyqMessage } from "../lib/messages";
 import { buildZip } from "../lib/zip";
 import "./popup.css";
 
@@ -25,8 +25,10 @@ const searchBarEl = document.getElementById("search-bar") as HTMLElement;
 const progressEl = document.getElementById("progress") as HTMLElement;
 const progressFillEl = document.getElementById("progress-fill") as HTMLElement;
 const failuresEl = document.getElementById("failures") as HTMLElement;
+const summaryEl = document.getElementById("summary") as HTMLElement | null;
 
-const SEARCH_MIN_PASSES = 4;
+/** Rows, passes and upcoming flights together, before a search box is worth the space. */
+const SEARCH_MIN_ROWS = 4;
 
 // Ryanair rejects large bursts of downloadpass calls, so keep few in flight.
 const BULK_CONCURRENCY = 4;
@@ -54,6 +56,34 @@ ensureBcMath();
 
 function setStatus(text: string) {
   statusEl.textContent = text;
+}
+
+function plural(count: number, noun: string, nouns = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : nouns}`;
+}
+
+/**
+ * How many bookings the list holds, in the terms a person counts in. A booking
+ * with two legs is two flights, and a checked-in leg is shown as its passes, so
+ * the three numbers do not add up to the rows on screen and are not meant to.
+ */
+function setSummary(flights: FlightSummary[], passes: BoardingPass[]) {
+  if (!summaryEl) return;
+
+  const bookings = countBookings(flights);
+  const upcoming = flights.filter((flight) => !flight.isReady).length;
+  if (bookings === 0 && passes.length === 0) {
+    summaryEl.hidden = true;
+    summaryEl.textContent = "";
+    return;
+  }
+
+  summaryEl.hidden = false;
+  summaryEl.textContent = [
+    plural(bookings, "booking"),
+    plural(upcoming, "upcoming flight"),
+    plural(passes.length, "boarding pass", "boarding passes"),
+  ].join(" · ");
 }
 
 function setProgress(done: number, total: number) {
@@ -701,20 +731,20 @@ async function downloadAllPasses(jobs: BulkJob[]) {
   }
 }
 
-function renderSearchBar(passes: BoardingPass[]) {
+function renderSearchBar(passes: BoardingPass[], upcoming: FlightSummary[] = []) {
   searchBarEl.innerHTML = "";
-  if (passes.length < SEARCH_MIN_PASSES) return;
+  if (passes.length + upcoming.length < SEARCH_MIN_ROWS) return;
 
   const input = document.createElement("input");
   input.type = "search";
   input.className = "search-input";
-  input.placeholder = "Search by name or reference...";
+  input.placeholder = "Search by name, reference, route or flight...";
   input.autocomplete = "off";
   input.spellcheck = false;
 
   const emptyHint = document.createElement("div");
   emptyHint.className = "search-empty";
-  emptyHint.textContent = "No passes match your search 🦆";
+  emptyHint.textContent = "Nothing matches your search 🦆";
   emptyHint.style.display = "none";
 
   const autoOpened = new Set<HTMLButtonElement>();
@@ -722,37 +752,40 @@ function renderSearchBar(passes: BoardingPass[]) {
   input.addEventListener("input", () => {
     const query = input.value.trim().toLowerCase();
     const tokens = query.split(/\s+/).filter(Boolean);
-    const rows = passesEl.querySelectorAll<HTMLElement>(".pass");
-    const visible: HTMLElement[] = [];
+    const visiblePasses: HTMLElement[] = [];
+    let visibleRows = 0;
 
-    rows.forEach((row) => {
+    // Passes and upcoming flights filter alike; only the passes feed the bulk buttons.
+    passesEl.querySelectorAll<HTMLElement>(".pass, .flight-summary").forEach((row) => {
       const haystack = row.dataset.search || "";
       const match = tokens.length === 0 || tokens.every((t) => haystack.includes(t));
       row.style.display = match ? "" : "none";
-      if (match) visible.push(row);
+      if (!match) return;
+      visibleRows++;
+      if (row.classList.contains("pass")) visiblePasses.push(row);
     });
 
-    emptyHint.style.display = query !== "" && visible.length === 0 ? "" : "none";
+    emptyHint.style.display = query !== "" && visibleRows === 0 ? "" : "none";
 
     // A running bulk download owns the button's label and disabled state.
     const bulkBtn = document.getElementById("btn-download-all") as HTMLButtonElement | null;
     if (bulkBtn && !bulkRunning) {
       bulkBtn.textContent = query === ""
         ? "Download All Passes"
-        : `Download Results (${visible.length})`;
-      bulkBtn.disabled = visible.length === 0;
+        : `Download Results (${visiblePasses.length})`;
+      bulkBtn.disabled = visiblePasses.length === 0;
     }
 
     const printBtn = document.getElementById("btn-print-all") as HTMLButtonElement | null;
     if (printBtn) {
-      printBtn.textContent = query === "" ? "Print all" : `Print Results (${visible.length})`;
-      printBtn.disabled = visible.length === 0;
+      printBtn.textContent = query === "" ? "Print all" : `Print Results (${visiblePasses.length})`;
+      printBtn.disabled = visiblePasses.length === 0;
     }
 
-    const isSingleMatch = query !== "" && visible.length === 1;
+    const isSingleMatch = query !== "" && visiblePasses.length === 1;
 
     if (isSingleMatch) {
-      const showBtn = visible[0].querySelector<HTMLButtonElement>(
+      const showBtn = visiblePasses[0].querySelector<HTMLButtonElement>(
         'button[data-action="qr"]'
       );
       if (showBtn && showBtn.textContent === "Show Ticket") {
@@ -899,7 +932,63 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
   });
 }
 
+function parseDate(value: string | undefined): Date | null {
+  const epoch = Date.parse(value ?? "");
+  return Number.isNaN(epoch) ? null : new Date(epoch);
+}
+
+function formatShortDateTime(date: Date): string {
+  const day = date.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
+  const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return `${day} ${time}`;
+}
+
+/**
+ * Whether check-in is open for this leg, and if not, when. Ryanair opens paid
+ * check-in weeks ahead but free check-in only shortly before the flight, and
+ * its own site says "open" for the paid window; a passenger without a seat is
+ * told the free one here instead.
+ */
+function checkinWindowLabel(flight: FlightSummary, now: Date): string {
+  const paid = parseDate(flight.checkInOpenUTC);
+  const free = parseDate(flight.checkInFreeOpenUTC);
+  // Whichever window applies, the other is better than saying nothing.
+  const opens = flight.hasSeat ? paid ?? free : free ?? paid;
+  const closes = parseDate(flight.checkInCloseUTC);
+
+  if (closes && now > closes) return "Check-in closed";
+  if (!opens) return "Check-in not open";
+  if (now >= opens) return "Check-in open";
+  return `Check-in opens ${formatShortDateTime(opens)}`;
+}
+
+/** Ryanair's word for a status we have not seen, made readable. */
+function humanizeStatus(status: string): string {
+  const words = status.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase();
+}
+
+export function checkinLabel(flight: FlightSummary, now: Date = new Date()): string {
+  switch (flight.checkinStatus) {
+    case "nocheckin":
+      return checkinWindowLabel(flight, now);
+    case "documentsadded":
+      // Travel documents entered, which is the first half of Ryanair's check-in.
+      return `Documents added · ${checkinWindowLabel(flight, now)}`;
+    case "unknown":
+      // The listing said nothing about check-in; the raw word reads like a fault.
+      return "Check-in status unknown";
+    case "checkin":
+    case "checkedin":
+      return "Checked in";
+    default:
+      return humanizeStatus(flight.checkinStatus);
+  }
+}
+
 function renderFlights(flights: FlightSummary[]) {
+  const now = new Date();
+
   flights.forEach((flight) => {
     const row = document.createElement("div");
     row.className = "flight-summary";
@@ -916,34 +1005,50 @@ function renderFlights(flights: FlightSummary[]) {
     const meta = document.createElement("div");
     meta.className = "pass-meta";
     meta.style.marginTop = "2px";
-
-    if (flight.checkinStatus === "nocheckin") {
-      const now = new Date();
-      const open = flight.checkInOpenUTC ? new Date(flight.checkInOpenUTC) : null;
-      const close = flight.checkInCloseUTC ? new Date(flight.checkInCloseUTC) : null;
-
-      if (open && now >= open && (!close || now <= close)) {
-        meta.textContent = "Check-in open";
-      } else {
-        meta.textContent = "Check-in not open";
-      }
-    } else {
-      meta.textContent = flight.checkinStatus;
-    }
+    meta.textContent = checkinLabel(flight, now);
 
     const details = document.createElement("div");
     details.style.fontSize = "11px";
     details.style.marginTop = "4px";
-    const flightDate = new Date(flight.date);
-    const dateStr = flightDate.toLocaleDateString("en-GB");
-    const timeStr = flightDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-    details.textContent = `${flight.flightNumber} · ${dateStr} ${timeStr}`;
+    // A leg the listing did not date shows its flight number alone.
+    const flightDate = parseDate(flight.date);
+    const when = flightDate
+      ? `${flightDate.toLocaleDateString("en-GB")} ${flightDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
+      : "";
+    details.textContent = [flight.flightNumber, when].filter(Boolean).join(" · ");
+
+    row.dataset.search = [
+      flight.pnr, flight.origin, flight.destination, flight.flightNumber, when, meta.textContent,
+    ].join(" ").toLowerCase();
 
     row.appendChild(header);
     row.appendChild(meta);
     row.appendChild(details);
     passesEl.appendChild(row);
   });
+}
+
+/**
+ * Draws the whole list from one result, cached or fresh: passes first, then the
+ * upcoming legs, then the count line. Returns the upcoming legs, which the
+ * caller's status line is chosen by.
+ */
+function renderList(result: PassesResult): FlightSummary[] {
+  passesEl.innerHTML = "";
+  bulkActionsEl.innerHTML = "";
+  searchBarEl.innerHTML = "";
+
+  const { flights, passes, downloadPayloads } = result;
+  const upcoming = flights.filter((flight) => !flight.isReady);
+  if (passes.length > 0) {
+    renderPasses(passes, downloadPayloads);
+    renderBulkActions(passes, downloadPayloads);
+  }
+  renderSearchBar(passes, upcoming);
+  if (upcoming.length > 0) renderFlights(upcoming);
+  setSummary(flights, passes);
+
+  return upcoming;
 }
 
 async function fetchPasses() {
@@ -965,19 +1070,7 @@ async function fetchPasses() {
   if (cachedData) {
     const isFresh = cachedData.cachedAt && (Date.now() - cachedData.cachedAt) < CACHE_TTL_MS;
     if (isFresh) {
-      passesEl.innerHTML = "";
-      bulkActionsEl.innerHTML = "";
-      searchBarEl.innerHTML = "";
-
-      if (cachedData.passes.length > 0) {
-        renderPasses(cachedData.passes, cachedData.downloadPayloads);
-        renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
-        renderSearchBar(cachedData.passes);
-      }
-      const upcoming = cachedData.flights.filter(f => !f.isReady);
-      if (upcoming.length > 0) {
-        renderFlights(upcoming);
-      }
+      renderList(cachedData);
 
       setStatus("Offline Mode ☁️");
     }
@@ -997,20 +1090,7 @@ async function fetchPasses() {
     // A bulk run holds row indexes into the list it started with, so a run in
     // progress owns the DOM; the fresh list is applied once it finishes.
     whenBulkIdle((deferred) => {
-      passesEl.innerHTML = "";
-      bulkActionsEl.innerHTML = "";
-      searchBarEl.innerHTML = "";
-
-      if (passes.length > 0) {
-        renderPasses(passes, payloads);
-        renderBulkActions(passes, payloads);
-        renderSearchBar(passes);
-      }
-
-      const upcoming = flights.filter(f => !f.isReady);
-      if (upcoming.length > 0) {
-        renderFlights(upcoming);
-      }
+      const upcoming = renderList({ flights, passes, downloadPayloads: payloads });
 
       // Only the completed refresh can trigger automatic printing. The
       // optimistic cache may still contain an old seat or barcode.
@@ -1039,21 +1119,7 @@ async function fetchPasses() {
       return;
     } else if (cachedData) {
       // Network failed but we have a cache — render it regardless of TTL
-      if (passesEl.innerHTML === "") {
-        passesEl.innerHTML = "";
-        bulkActionsEl.innerHTML = "";
-        searchBarEl.innerHTML = "";
-
-        if (cachedData.passes.length > 0) {
-          renderPasses(cachedData.passes, cachedData.downloadPayloads);
-          renderBulkActions(cachedData.passes, cachedData.downloadPayloads);
-          renderSearchBar(cachedData.passes);
-        }
-        const upcoming = cachedData.flights.filter(f => !f.isReady);
-        if (upcoming.length > 0) {
-          renderFlights(upcoming);
-        }
-      }
+      if (passesEl.innerHTML === "") renderList(cachedData);
       if (autoPrintPending) {
         autoPrintPending = false;
         restorePrintQuery();
@@ -1105,6 +1171,166 @@ function renderOpenInTabControl() {
       setStatus(`Could not open a tab: ${errorText(error)}`);
     });
   });
+
+  header.appendChild(button);
+}
+
+/* ------------------------------------------------------------------ *
+ * Diagnostic report (tab view only)
+ * ------------------------------------------------------------------ */
+
+const DIAGNOSTICS_DIALOG_ID = "diagnostics-dialog";
+const DIAGNOSTICS_REPORT_ID = "diagnostic-report";
+
+const DIAGNOSTICS_NOTE =
+  "Diagnostic dump to help track down the bug. No personal information is included.";
+
+/** Where a copied report is meant to end up. */
+const ISSUES_URL = "https://github.com/Ax6/ryanquack/issues/new";
+
+const DIAGNOSTICS_EMPTY = "Nothing to report yet. Refresh the list first, then open this again.";
+
+/** happy-dom and pre-2022 engines ship <dialog> without the modal methods. */
+function showDialog(dialog: HTMLDialogElement) {
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+}
+
+function closeDialog(dialog: HTMLDialogElement) {
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+/**
+ * Built from scratch on every open, so a previous run's "Copied ✓" never greets
+ * the next one. A null report means nothing has been fetched yet: then there is
+ * something to read but nothing to copy.
+ */
+function buildDiagnosticsDialog(json: string | null): HTMLDialogElement {
+  document.getElementById(DIAGNOSTICS_DIALOG_ID)?.remove();
+
+  const dialog = document.createElement("dialog");
+  dialog.id = DIAGNOSTICS_DIALOG_ID;
+  dialog.className = "diagnostics-dialog";
+
+  const title = document.createElement("h2");
+  title.className = "diagnostics-title";
+  title.textContent = "Quack a bug 🦆";
+
+  const note = document.createElement("p");
+  note.className = "diagnostics-note";
+  note.textContent = DIAGNOSTICS_NOTE;
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.id = "btn-copy-diagnostics";
+  copy.textContent = "Copy";
+
+  const close = document.createElement("button");
+  close.type = "button";
+  close.id = "btn-close-diagnostics";
+  close.className = "btn-close-diagnostics";
+  close.textContent = "Close";
+  close.addEventListener("click", () => closeDialog(dialog));
+
+  // Copying is only half the job, so the place to paste it is one click away.
+  const issues = document.createElement("a");
+  issues.id = "link-diagnostics-issues";
+  issues.className = "diagnostics-issues";
+  issues.href = ISSUES_URL;
+  issues.target = "_blank";
+  issues.rel = "noopener noreferrer";
+  issues.textContent = "Report on GitHub ↗";
+
+  const actions = document.createElement("div");
+  actions.className = "diagnostics-actions";
+  actions.append(issues, copy, close);
+
+  let body: HTMLElement;
+  if (json === null) {
+    body = document.createElement("p");
+    body.className = "diagnostics-empty";
+    body.textContent = DIAGNOSTICS_EMPTY;
+    copy.disabled = true;
+  } else {
+    body = document.createElement("pre");
+    body.id = DIAGNOSTICS_REPORT_ID;
+    body.className = "diagnostic-report";
+    // Focusable, so the block can be scrolled and selected without a mouse.
+    body.tabIndex = 0;
+    body.textContent = json;
+    copy.addEventListener("click", () => { void copyDiagnosticReport(json, copy, dialog); });
+  }
+
+  dialog.append(title, note, body, actions);
+  document.body.appendChild(dialog);
+  return dialog;
+}
+
+/**
+ * The JSON is already on screen and selectable by the time this runs, so a
+ * clipboard the browser refuses costs a manual selection and nothing more.
+ */
+async function copyDiagnosticReport(json: string, button: HTMLButtonElement, dialog: HTMLDialogElement) {
+  try {
+    await navigator.clipboard.writeText(json);
+    button.textContent = "Copied ✓";
+    setStatus("Diagnostic report copied");
+  } catch (error) {
+    button.textContent = "Copy";
+
+    let warning = dialog.querySelector<HTMLElement>(".diagnostics-error");
+    if (!warning) {
+      warning = document.createElement("p");
+      warning.className = "diagnostics-error";
+      warning.setAttribute("role", "alert");
+      dialog.insertBefore(warning, dialog.querySelector(".diagnostics-actions"));
+    }
+    warning.textContent = "The clipboard refused the copy. Select the text above and copy it by hand.";
+
+    setStatus(`Could not copy the report: ${errorText(error)}`);
+  }
+}
+
+/** Fetched as the dialog opens, so the report is read before it is copied. */
+async function openDiagnosticsDialog() {
+  try {
+    const report = (await browser.runtime.sendMessage<RyqMessage, DiagnosticReport | null>({
+      type: "RYQ_GET_DIAGNOSTICS",
+    })) as DiagnosticReport | null | undefined;
+
+    if (!report) {
+      setStatus("Refresh first, then open the report");
+      showDialog(buildDiagnosticsDialog(null));
+      return;
+    }
+
+    showDialog(buildDiagnosticsDialog(JSON.stringify(report, null, 2)));
+  } catch (error) {
+    setStatus(`Could not read the report: ${errorText(error)}`);
+  }
+}
+
+/**
+ * The report is only ever wanted when something is missing, so it sits in the
+ * header slot the popup spends on "Open in tab", in the same quiet style.
+ */
+function renderDiagnosticsControl() {
+  if (!isTabView()) return;
+
+  const header = document.querySelector(".app-header");
+  if (!header) return;
+
+  document.getElementById("btn-diagnostics")?.remove();
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "btn-diagnostics";
+  button.className = "btn-diagnostics";
+  button.textContent = "Quack a bug";
+  button.setAttribute("aria-label", "Quack a bug");
+  button.title = "Quack a bug: copy a diagnostic report and open an issue";
+  button.addEventListener("click", () => { void openDiagnosticsDialog(); });
 
   header.appendChild(button);
 }
@@ -1335,5 +1561,7 @@ function buildPrintAllButton(passes: BoardingPass[]): HTMLButtonElement {
 
 applyViewMode();
 renderOpenInTabControl();
+// Offered even with nothing to show: an empty list is the report's whole point.
+renderDiagnosticsControl();
 
 fetchPasses();

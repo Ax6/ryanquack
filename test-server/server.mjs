@@ -1,56 +1,52 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { buildAccount, passesFor } from "./account.mjs";
 
 const PORT = 3000;
-const DATA_DIR = new URL("data", import.meta.url).pathname;
 
-let currentScenario = "MIXED";
-let passesCount = 1;
+let currentScenario = "ACTIVE";
 // "recordLocator|sequenceNumber" of every pass handed out without a barcode, so
 // /v1/downloadpass can answer the way a real backend plausibly would.
 const barcodelessPasses = new Set();
-let upcomingCount = 1;
+/** Adds one item Ryanair failed to load the booking for, to exercise the fallback. */
+let withFailure = false;
+/** Adds a booking whose outbound is checked in and whose return only has documents added. */
+let withMixed = false;
+/** Hands the second pass out without a barcode, the state the popup has to guard. */
+let barcodeless = false;
+/** How many bookings are checked in, and how many are coming up without a pass. */
+let passesCount = 2;
+let upcomingCount = 6;
 
-function generateOrders(pCount, uCount) {
-  const items = [];
-  let idCounter = 1000;
+// Ryanair pages `/details` at 25 and hands back a nextToken for the rest.
+const ORDERS_PAGE_SIZE = 25;
 
-  // Generate Passes (Checked In)
-  for (let i = 0; i < pCount; i++) {
-    const id = idCounter++;
-    items.push({
-      tripId: `trip-${id}`,
-      productId: String(id),
-      type: "flight",
-      payload: { booking: { bookingId: id, pnr: `PASS${i+1}` } },
-      rawBooking: {
-        bookingId: id,
-        recordLocator: `PASS${i+1}`,
-        flights: [{ journeyNum: 0, origin: "STN", destination: "DUB", flightNumber: `FR${id}`, times: { departUTC: "2026-01-15T10:00:00Z" } }],
-        checkins: [{ journeyNum: 0, status: "checkedin" }]
-      }
-    });
-  }
+/** Opaque cursor, like the real one: it only has to survive a round trip. */
+function encodeNextToken(offset) {
+  return Buffer.from(`offset:${offset}`, "utf8").toString("base64");
+}
 
-  // Generate Upcoming (No Checkin)
-  for (let i = 0; i < uCount; i++) {
-    const id = idCounter++;
-    items.push({
-      tripId: `trip-${id}`,
-      productId: String(id),
-      type: "flight",
-      payload: { booking: { bookingId: id, pnr: `NEXT${i+1}` } },
-      rawBooking: {
-        bookingId: id,
-        recordLocator: `NEXT${i+1}`,
-        flights: [{ journeyNum: 0, origin: "DUB", destination: "BER", flightNumber: `FR${id}`, times: { departUTC: "2026-05-20T10:00:00Z" } }],
-        checkins: [{ journeyNum: 0, status: "nocheckin" }]
-      }
-    });
-  }
+function decodeNextToken(token) {
+  const offset = Number.parseInt(Buffer.from(token, "base64").toString("utf8").replace("offset:", ""), 10);
+  return Number.isInteger(offset) && offset > 0 ? offset : 0;
+}
 
-  return { items };
+/**
+ * The account is rebuilt per request from the clock, so flown legs stay in the
+ * past and check-in windows stay open however long the server runs.
+ */
+function account() {
+  return buildAccount({ passes: passesCount, upcoming: upcomingCount, withFailure, withMixed });
+}
+
+/** Serves `all` one page at a time, the way Ryanair cursors the listing. */
+function pageOf(all, token) {
+  const offset = token ? decodeNextToken(token) : 0;
+  const nextOffset = offset + ORDERS_PAGE_SIZE;
+
+  const data = { items: all.slice(offset, nextOffset) };
+  if (nextOffset < all.length) data.nextToken = encodeNextToken(nextOffset);
+
+  return { data, offset, nextOffset };
 }
 
 const server = createServer(async (req, res) => {
@@ -68,10 +64,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  console.log(`${req.method} ${req.url} [Scenario: ${currentScenario}] (P:${passesCount}, U:${upcomingCount})`);
+  console.log(`${req.method} ${req.url} [Scenario: ${currentScenario}] (P:${passesCount}, U:${upcomingCount})${withFailure ? " +failure" : ""}${withMixed ? " +mixed" : ""}${barcodeless ? " +barcodeless" : ""}`);
 
   // Scenario Dashboard
   if (req.url === "/" && req.method === "GET") {
+    const { bookings } = account();
+    const pages = Math.max(1, Math.ceil(bookings.length / ORDERS_PAGE_SIZE));
     res.setHeader("Content-Type", "text/html");
     res.writeHead(200);
     res.end(`
@@ -80,18 +78,25 @@ const server = createServer(async (req, res) => {
         <body style="font-family: sans-serif; padding: 20px;">
           <h1>Mock Scenario Control</h1>
           <p>Current: <strong>${currentScenario}</strong></p>
-          <div style="margin-bottom: 20px; border: 1px solid #ccc; padding: 10px;">
-            <label>Passes Count: <input type="number" id="pCount" value="${passesCount}" style="width: 50px;"></label>
-            <label>Upcoming Count: <input type="number" id="uCount" value="${upcomingCount}" style="width: 50px;"></label>
-            <button onclick="updateCounts()">Update Counts</button>
-            <p style="margin: 8px 0 0; font-size: 12px; color: #666;">
-              Passes Count &ge; 2 includes a pass with no barcode.
-            </p>
+          <div style="margin-bottom: 20px; border: 1px solid #ccc; padding: 10px; max-width: 520px;">
+            <p style="margin: 0 0 8px;"><strong>Active account.</strong> ${bookings.length} bookings, served in ${pages} page${pages === 1 ? "" : "s"} of ${ORDERS_PAGE_SIZE}.
+            The upcoming ones mix one-way and return trips, solo travellers and groups,
+            documents added or not, and an outbound that has already flown.</p>
+            <label>Checked in: <input type="number" id="pCount" value="${passesCount}" min="0" style="width: 60px;"></label>
+            <label>Upcoming: <input type="number" id="uCount" value="${upcomingCount}" min="0" style="width: 60px;"></label>
+            <button onclick="updateCounts()">Use these counts</button>
+            <button onclick="postState({ passesCount: 2, upcomingCount: 120, scenario: 'ACTIVE' })">Many bookings</button><br>
+            <label><input type="checkbox" id="failure" ${withFailure ? "checked" : ""} onchange="postState({ withFailure: this.checked })">
+              Add an item Ryanair failed to load the booking for (payload only)</label><br>
+            <label><input type="checkbox" id="barcodeless" ${barcodeless ? "checked" : ""} onchange="postState({ barcodeless: this.checked })">
+              Hand the second pass out without a barcode</label><br>
+            <label><input type="checkbox" id="mixed" ${withMixed ? "checked" : ""} onchange="postState({ withMixed: this.checked })">
+              Add a booking checked in for the outbound only, with documents added for the return</label>
           </div>
           <div style="display: grid; gap: 10px; max-width: 300px;">
+            <button onclick="set('ACTIVE')">Active account (uses counts)</button>
             <button onclick="set('LOGGED_OUT')">Logged Out (403)</button>
             <button onclick="set('NO_FLIGHTS')">No Flights (Empty)</button>
-            <button onclick="set('MIXED')">Active (Uses Counts)</button>
             <button onclick="set('WALLET_ERROR')">Google Wallet Error (500)</button>
             <button onclick="set('WALLET_NO_TOKEN')">Google Wallet Missing Token</button>
             <button onclick="set('WALLET_DELAY')">Google Wallet Delayed (6 seconds)</button>
@@ -103,7 +108,7 @@ const server = createServer(async (req, res) => {
             function updateCounts() {
               const p = parseInt(document.getElementById('pCount').value);
               const u = parseInt(document.getElementById('uCount').value);
-              postState({ passesCount: p, upcomingCount: u, scenario: 'MIXED' });
+              postState({ passesCount: p, upcomingCount: u, scenario: 'ACTIVE' });
             }
             function postState(data) {
               fetch('/test-server/scenario', {
@@ -127,8 +132,11 @@ const server = createServer(async (req, res) => {
       try {
         const payload = JSON.parse(body);
         if (payload.scenario) currentScenario = payload.scenario;
-        if (payload.passesCount !== undefined) passesCount = payload.passesCount;
-        if (payload.upcomingCount !== undefined) upcomingCount = payload.upcomingCount;
+        if (payload.withFailure !== undefined) withFailure = Boolean(payload.withFailure);
+        if (payload.withMixed !== undefined) withMixed = Boolean(payload.withMixed);
+        if (payload.barcodeless !== undefined) barcodeless = Boolean(payload.barcodeless);
+        if (Number.isInteger(payload.passesCount)) passesCount = Math.max(0, payload.passesCount);
+        if (Number.isInteger(payload.upcomingCount)) upcomingCount = Math.max(0, payload.upcomingCount);
         res.writeHead(200);
         res.end();
       } catch (e) {
@@ -206,84 +214,41 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // Boarding Passes
+  // Boarding Passes: one per passenger who has checked in on the requested
+  // bookings, nothing for the rest.
   if (req.url === "/v1/boardingpasses" && req.method === "POST") {
     if (req.headers["client"] !== "ios") {
       res.writeHead(403); res.end(); return;
     }
-    
-    // If we are simulating "No Flights" or "Upcoming Only" (via counts),
-    // the app logic should theoretically filter them out before calling this.
-    // But if it does call this, we can return the mock passes data.
-    // However, if we want to be strict:
+
     if (currentScenario === "NO_FLIGHTS") {
-       res.writeHead(403); res.end(); return;
+      res.writeHead(403); res.end(); return;
     }
 
-    // Dynamic generation for boarding passes? 
-    // The current 'boardingpasses.json' only has ONE pass.
-    // To support multiple passes, we would need to generate this dynamically too.
-    // For now, let's just return the static file but maybe duplicate the item if passesCount > 1?
-    // Let's keep it simple: The app requests passes for SPECIFIC IDs.
-    // If we return the static JSON, it might contain IDs that match or don't match.
-    // Ideally, we should generate this response to match the 'bookingIds' in the request body.
-    
     let requestBody = "";
-    req.on("data", chunk => { requestBody += chunk; });
-    req.on("end", async () => {
-       try {
-         const body = JSON.parse(requestBody);
-         const requestedIds = body.bookingIds || [];
-         
-         // `barcode: null` reproduces a pass Ryanair has issued no scannable code for.
-         // Mirrors the second entry in data/boardingpasses.json, which is only served
-         // as the parse-failure fallback below. Second in the list so a Passes Count
-         // of 2 is enough to see the state.
-         const MOCK_PASSENGERS = [
-           { first: "Ryan",  last: "Quack",    seat: "1A",  sequence: 1,  priority: true  },
-           { first: "Sofia", last: "Lindqvist", seat: "12B", sequence: 11, priority: false, barcode: null },
-           { first: "John",  last: "Smith",    seat: "14C", sequence: 42, priority: false },
-           { first: "Maria", last: "Garcia",   seat: "7B",  sequence: 18, priority: true  },
-           { first: "Ryan",  last: "O'Brien",  seat: "9D",  sequence: 27, priority: false },
-           { first: "Liam",  last: "Murphy",   seat: "22F", sequence: 67, priority: false },
-         ];
+    for await (const chunk of req) {
+      requestBody += chunk;
+    }
 
-         // Generate passes for requested IDs
-         const passes = requestedIds.map((id, i) => {
-            const p = MOCK_PASSENGERS[i % MOCK_PASSENGERS.length];
-            return {
-              passId: `PASS_${id}`,
-              pnr: `PASS${id-1000+1}`,
-              name: { first: p.first, last: p.last },
-              barcode: p.barcode === null
-                ? null
-                : `M1${p.last.toUpperCase()}/${p.first.toUpperCase()} EABCDEF STUBDUB FR ${String(id).padStart(4,'0')} 0151A${p.seat.padStart(4,' ')}100`,
-              departure: { code: "STN", name: "London Stansted", date: "2026-01-15T10:00:00" },
-              arrival: { code: "DUB", name: "Dublin", date: "2026-01-15T11:15:00" },
-              flight: { carrierCode: "FR", number: `${id}` },
-              seat: { designator: p.seat },
-              sequence: p.sequence,
-              boardingTime: "2026-01-15T09:30:00",
-              priority: p.priority,
-              paxType: "ADT",
-            };
-         });
+    let requestedIds = [];
+    try {
+      requestedIds = JSON.parse(requestBody).bookingIds ?? [];
+    } catch {
+      res.writeHead(400);
+      res.end("Invalid JSON");
+      return;
+    }
 
-         passes.forEach((p) => {
-           if (!p.barcode) barcodelessPasses.add(`${p.pnr}|${p.sequence}`);
-         });
-
-         res.setHeader("Content-Type", "application/json");
-         res.writeHead(200);
-         res.end(JSON.stringify(passes));
-       } catch (e) {
-         // Fallback to static file if parsing fails
-         const data = await readFile(join(DATA_DIR, "boardingpasses.json"), "utf8");
-         res.setHeader("Content-Type", "application/json");
-         res.writeHead(200);
-         res.end(data);
-       }
+    const passes = passesFor(account(), requestedIds);
+    if (barcodeless && passes[1]) passes[1].barcode = null;
+    passes.forEach((p) => {
+      if (!p.barcode) barcodelessPasses.add(`${p.pnr}|${p.sequence}`);
     });
+
+    console.log(`  -> ${passes.length} passes for ${requestedIds.length} requested bookings`);
+    res.setHeader("Content-Type", "application/json");
+    res.writeHead(200);
+    res.end(JSON.stringify(passes));
     return;
   }
 
@@ -300,8 +265,13 @@ const server = createServer(async (req, res) => {
        return;
     }
 
-    // Dynamic Generation
-    const data = generateOrders(passesCount, upcomingCount);
+    // Served one page at a time so the client has to follow nextToken to see
+    // every booking.
+    const query = new URL(req.url, `http://localhost:${PORT}`).searchParams;
+    const all = account().items;
+    const { data, offset, nextOffset } = pageOf(all, query.get("nextToken"));
+
+    console.log(`  -> orders ${offset}-${Math.min(nextOffset, all.length)} of ${all.length}${data.nextToken ? " (more)" : ""}`);
     res.setHeader("Content-Type", "application/json");
     res.writeHead(200);
     res.end(JSON.stringify(data));

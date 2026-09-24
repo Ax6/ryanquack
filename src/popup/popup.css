@@ -56,6 +56,7 @@ button:disabled {
 #status-bar {
   position: sticky;
   bottom: 0;
+
   margin: 12px -12px -12px -12px;
   padding: 8px 12px 10px 12px;
   background: #f6f1e7;
@@ -67,6 +68,16 @@ button:disabled {
   opacity: 0.7;
   text-align: center;
   line-height: 1.4;
+}
+
+/* The count line: what the list holds, so nobody has to count rows. */
+#summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: #073590;
+  text-align: center;
+  line-height: 1.4;
+  margin-bottom: 2px;
 }
 
 #progress {
@@ -351,14 +362,16 @@ button:disabled {
 }
 
 /* ------------------------------------------------------------------ *
- * "Open in tab" header control
+ * Header text links — "Open in tab" (popup) and "Diagnostics" (tab view).
+ * Only ever one of the two, so they share the top-right slot.
  * ------------------------------------------------------------------ */
 
 .app-header {
   position: relative;
 }
 
-.btn-open-tab {
+.btn-open-tab,
+.btn-diagnostics {
   position: absolute;
   top: 10px;
   right: 12px;
@@ -377,8 +390,16 @@ button:disabled {
   opacity: 0.85;
 }
 
-.btn-open-tab:hover {
+.btn-open-tab:hover,
+.btn-diagnostics:hover,
+.btn-diagnostics:focus-visible {
   opacity: 1;
+}
+
+/* The tab view's header carries the centring gutter as padding; the link has to
+   follow it or it drifts off to the window edge. */
+body.view-tab .btn-diagnostics {
+  right: max(12px, calc((100% - 720px) / 2));
 }
 
 /* ------------------------------------------------------------------ *
@@ -387,6 +408,7 @@ button:disabled {
 
 #bulk-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -396,6 +418,112 @@ button:disabled {
 }
 
 .btn-print-all {
+  background: #ffffff;
+  color: #073590;
+  border-color: #073590;
+}
+
+/* ------------------------------------------------------------------ *
+ * Diagnostic report dialog — opened from the header link, tab view only
+ * ------------------------------------------------------------------ */
+
+.diagnostics-dialog {
+  width: min(600px, calc(100vw - 48px));
+  padding: 0;
+  border: 1px solid #2b2b2b;
+  border-radius: 6px;
+  background: #f6f1e7;
+  color: #2b2b2b;
+  box-shadow: 0 12px 32px rgba(7, 53, 144, 0.35);
+}
+
+.diagnostics-dialog::backdrop {
+  background: rgba(7, 53, 144, 0.55);
+}
+
+.diagnostics-title {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid #2b2b2b;
+  background: #073590;
+  color: #f6c453;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.diagnostics-note {
+  margin: 0;
+  padding: 12px 16px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: 0.8;
+}
+
+.diagnostic-report {
+  margin: 0 16px;
+  padding: 10px;
+  max-height: 44vh;
+  overflow: auto;
+  border: 1px solid #2b2b2b;
+  border-radius: 4px;
+  background: #ffffff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+/* Nothing fetched yet: the same slot, carrying the reason instead. */
+.diagnostics-empty {
+  margin: 0 16px;
+  padding: 12px;
+  border: 1px dashed rgba(43, 43, 43, 0.4);
+  border-radius: 4px;
+  background: #ffffff;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diagnostics-error {
+  margin: 8px 16px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #9b1c1c;
+}
+
+.diagnostics-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 16px 16px;
+}
+
+/* Sits opposite the buttons: a way out, not a thing to press by accident. */
+.diagnostics-issues {
+  margin-right: auto;
+  color: #073590;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.8;
+}
+
+.diagnostics-issues:hover,
+.diagnostics-issues:focus-visible {
+  opacity: 1;
+}
+
+.diagnostics-actions button {
+  width: auto;
+  padding: 8px 18px;
+  font-size: 12px;
+}
+
+.btn-close-diagnostics {
   background: #ffffff;
   color: #073590;
   border-color: #073590;

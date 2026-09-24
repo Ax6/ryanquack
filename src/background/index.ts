@@ -8,11 +8,28 @@
  * (at your option) any later version.
  */
 import browser from "webextension-polyfill";
-import { buildDownloadPayload, decodeCustomerId, extractFlightsFromOrders, filterReadyBookings } from "../lib/ryanair";
-import type { BoardingPass, DownloadPayload } from "../lib/ryanair";
+import {
+  buildDownloadPayload,
+  decodeCustomerId,
+  extractFlightsFromOrders,
+  filterReadyBookings,
+  markUnconfirmedFlights,
+  sortPassesByDeparture,
+} from "../lib/ryanair";
+import type { BoardingPass, DownloadPayload, FlightSummary, OrderResponse } from "../lib/ryanair";
 import type { CachedPasses, PassesResult, Tokens } from "../lib/messages";
 import { readMessageType } from "../lib/messages";
-import { fetchBoardingPass, fetchOrders } from "../lib/api";
+import { fetchBoardingPassesInChunks, fetchOrders, ordersUrl } from "../lib/api";
+import type { ChunkVisit, PageVisit } from "../lib/api";
+import {
+  DIAGNOSTICS_STORAGE_KEY,
+  buildDiagnosticReport,
+  newEndpointLog,
+  redactCustomerId,
+  skeleton,
+} from "../lib/diagnostics";
+import type { DiagnosticEnvironment, DiagnosticReport, EndpointLog } from "../lib/diagnostics";
+import { errorText } from "../lib/errors";
 
 async function getTokens(): Promise<Tokens> {
   const cookie = await browser.cookies.get({
@@ -25,6 +42,131 @@ async function getTokens(): Promise<Tokens> {
   };
 }
 
+/** Only Firefox serves extension pages from `moz-extension:`. */
+function detectTarget(): string {
+  try {
+    return browser.runtime.getURL("").startsWith("moz-extension://") ? "firefox" : "chrome";
+  } catch {
+    return "unknown";
+  }
+}
+
+function readEnvironment(): DiagnosticEnvironment {
+  return {
+    extensionVersion: browser.runtime.getManifest().version,
+    userAgent: typeof navigator === "undefined" ? "" : navigator.userAgent,
+    target: detectTarget(),
+  };
+}
+
+async function saveDiagnostics(report: DiagnosticReport): Promise<void> {
+  await browser.storage.local.set({ [DIAGNOSTICS_STORAGE_KEY]: report });
+}
+
+async function readDiagnostics(): Promise<DiagnosticReport | null> {
+  const stored = await browser.storage.local.get(DIAGNOSTICS_STORAGE_KEY);
+  return (stored?.[DIAGNOSTICS_STORAGE_KEY] as DiagnosticReport | undefined) ?? null;
+}
+
+/**
+ * Fetches everything the popup shows, and writes a diagnostic report on the way
+ * out whether or not it worked — a failed fetch is exactly when the report is
+ * worth having.
+ */
+async function fetchPasses(customerId: string, token: string): Promise<PassesResult> {
+  const endpoints = {
+    details: newEndpointLog(ordersUrl(customerId, API_ORDERS_URL), customerId),
+    boardingpasses: newEndpointLog(
+      redactCustomerId(`${API_BOARDING_PASS_URL}/v1/boardingpasses`, customerId),
+      customerId
+    ),
+  };
+  // Every body, shaped together at the end: a key present on nine bookings in
+  // ten only shows up as such when the pages are read as one.
+  const bodies: { details: unknown[]; boardingpasses: unknown[] } = { details: [], boardingpasses: [] };
+
+  /** A thrown url carries the customer id, and the report is meant to be postable. */
+  const reportableError = (error: unknown) => redactCustomerId(errorText(error), customerId);
+
+  const recordPage = (visit: PageVisit) => {
+    bodies.details.push(visit.body);
+    endpoints.details.requests.push({ status: visit.status, durationMs: visit.durationMs, items: visit.items });
+  };
+
+  const recordChunk = (visit: ChunkVisit) => {
+    if (visit.body !== undefined) bodies.boardingpasses.push(visit.body);
+    endpoints.boardingpasses.requests.push({
+      status: visit.status,
+      durationMs: visit.durationMs,
+      items: visit.items,
+      ...(visit.error ? { error: visit.error } : {}),
+    });
+  };
+
+  let orders: OrderResponse = { items: [] };
+  let flights: FlightSummary[] = [];
+  let bookingIds: number[] = [];
+  let passes: BoardingPass[] = [];
+  let downloadPayloads: DownloadPayload[] = [];
+
+  try {
+    try {
+      orders = await fetchOrders(customerId, token, API_ORDERS_URL, fetch, recordPage);
+    } catch (error) {
+      endpoints.details.error = reportableError(error);
+      throw error;
+    }
+
+    flights = extractFlightsFromOrders(orders);
+
+    // A booking with two legs is two rows; asking for its passes twice would
+    // hand the popup every pass on it twice.
+    bookingIds = [...new Set(filterReadyBookings(flights))];
+
+    if (bookingIds.length > 0) {
+      // Sorted before the payloads are built: the popup pairs the two by index.
+      passes = sortPassesByDeparture(await fetchBoardingPassesInChunks({
+        customerId,
+        bookingIds,
+        xAuthToken: token,
+      }, API_BOARDING_PASS_URL, fetch, recordChunk));
+      downloadPayloads = passes.map(buildDownloadPayload);
+    }
+
+    // A booking that produced no pass belongs in the upcoming list, whatever its
+    // status said. Reconciled before the result is built, so the cache holds the
+    // same answer.
+    flights = markUnconfirmedFlights(flights, passes);
+
+    const result: PassesResult = { flights, passes, downloadPayloads };
+
+    // Cache for offline support. A full store must not become an unhandled rejection.
+    const cached: CachedPasses = { ...result, cachedAt: Date.now() };
+    browser.storage.local.set({ cachedPasses: cached }).catch((error: unknown) => {
+      console.error("Could not cache the passes", error);
+    });
+
+    return result;
+  } finally {
+    try {
+      await saveDiagnostics(await buildDiagnosticReport({
+        environment: readEnvironment(),
+        endpoints,
+        orders,
+        list: { flights, readyBookingIds: bookingIds },
+        passes,
+        schema: {
+          ...(bodies.details.length ? { details: skeleton(bodies.details) } : {}),
+          ...(bodies.boardingpasses.length ? { boardingpasses: skeleton(bodies.boardingpasses) } : {}),
+        },
+      }));
+    } catch (error) {
+      // A report we could not write must never be why the refresh failed.
+      console.error("Diagnostics failed", error);
+    }
+  }
+}
+
 browser.runtime.onMessage.addListener((message: unknown) => {
   const type = readMessageType(message);
   if (!type) {
@@ -33,6 +175,10 @@ browser.runtime.onMessage.addListener((message: unknown) => {
 
   if (type === "RYQ_GET_TOKENS") {
     return getTokens();
+  }
+
+  if (type === "RYQ_GET_DIAGNOSTICS") {
+    return readDiagnostics().catch(() => null);
   }
 
   if (type === "RYQ_FETCH_BOARDING_PASSES") {
@@ -47,37 +193,7 @@ browser.runtime.onMessage.addListener((message: unknown) => {
         throw new Error("LOGIN_REQUIRED");
       }
 
-      // 1. Fetch Orders
-      const orders = await fetchOrders(customerId, token, API_ORDERS_URL);
-      
-      // 2. Extract Flights
-      const flights = extractFlightsFromOrders(orders);
-      const bookingIds = filterReadyBookings(flights);
-
-      let passes: BoardingPass[] = [];
-      let downloadPayloads: DownloadPayload[] = [];
-
-      // 3. Fetch Boarding Passes ONLY if we have ready bookings
-      if (bookingIds.length > 0) {
-        passes = await fetchBoardingPass({
-          customerId,
-          bookingIds,
-          xAuthToken: token,
-        }, API_BOARDING_PASS_URL);
-        downloadPayloads = passes.map(buildDownloadPayload);
-      }
-
-      const result: PassesResult = {
-        flights,
-        passes,
-        downloadPayloads
-      };
-
-      // Cache for offline support
-      const cached: CachedPasses = { ...result, cachedAt: Date.now() };
-      browser.storage.local.set({ cachedPasses: cached });
-
-      return result;
+      return fetchPasses(customerId, token);
     });
   }
 
