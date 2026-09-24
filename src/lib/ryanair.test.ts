@@ -115,6 +115,7 @@ describe("Ryanair Logic", () => {
   });
 
   it("should extract check-in window times, including the free window and bought seats", () => {
+    // Free check-in opens 24 hours out; Ryanair's own field for it says 48.
     const mockOrders = {
       items: [
         {
@@ -129,7 +130,7 @@ describe("Ryanair Logic", () => {
                 flightNumber: "FR99",
                 times: { departUTC: "2026-06-01T10:00:00Z" },
                 checkInOpenUTC: "2026-04-02T10:00:00Z",
-                checkInFreeAllocateOpenUtcDate: "2026-05-31T10:00:00Z",
+                checkInFreeAllocateOpenUtcDate: "2026-05-30T10:00:00Z",
                 checkInCloseUTC: "2026-06-01T08:00:00Z"
               },
               {
@@ -154,12 +155,11 @@ describe("Ryanair Logic", () => {
     expect(outbound).toMatchObject({
       checkinStatus: "nocheckin",
       checkInOpenUTC: "2026-04-02T10:00:00Z",
-      checkInFreeOpenUTC: "2026-05-31T10:00:00Z",
+      checkInFreeOpenUTC: "2026-05-31T10:00:00.000Z",
       checkInCloseUTC: "2026-06-01T08:00:00Z",
       hasSeat: false,
     });
-    expect(inbound).toMatchObject({ checkinStatus: "nocheckin", hasSeat: true });
-    expect(inbound.checkInFreeOpenUTC).toBeUndefined();
+    expect(inbound).toMatchObject({ checkinStatus: "nocheckin", hasSeat: true, checkInFreeOpenUTC: "2026-06-07T10:00:00.000Z" });
   });
 
   it("should count distinct bookings behind the legs", () => {
@@ -273,7 +273,7 @@ describe("Reading the orders listing", () => {
       rawBookingFailure: { message: "timeout" },
     };
 
-    const flights = extractFlightsFromOrders({ items: [item] });
+    const flights = extractFlightsFromOrders({ items: [item] }, Date.parse("2026-09-20T00:00:00Z"));
 
     expect(bookingSource(item)).toBe("payload");
     expect(flights).toHaveLength(2);
@@ -284,6 +284,10 @@ describe("Reading the orders listing", () => {
     });
     // A connecting journey is one leg, from its first station to its last.
     expect(flights[1]).toMatchObject({ origin: "DUB", destination: "STN", flightNumber: "FR2000" });
+
+    // Once the outbound has left, only the return is still to come.
+    expect(extractFlightsFromOrders({ items: [item] }, Date.parse("2026-09-25T00:00:00Z"))
+      .map((flight) => flight.flightNumber)).toEqual(["FR2000"]);
   });
 
   it("should prefer the raw booking when both are there", () => {
@@ -314,7 +318,7 @@ describe("Reading the orders listing", () => {
     };
 
     expect(bookingSource(item)).toBe("payload");
-    expect(extractFlightsFromOrders({ items: [item] })).toHaveLength(1);
+    expect(extractFlightsFromOrders({ items: [item] }, Date.parse("2026-09-20T00:00:00Z"))).toHaveLength(1);
   });
 
   it("should read a booking repeated across two pages once", () => {

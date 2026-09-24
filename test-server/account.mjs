@@ -128,7 +128,7 @@ function buildBooking(spec, index, now, random) {
       arrive: times.arrive,
       times,
       checkInOpenUTC: iso(depart - 60 * DAY),
-      checkInFreeAllocateOpenUtcDate: iso(depart - 24 * HOUR),
+      checkInFreeAllocateOpenUtcDate: iso(depart - 48 * HOUR),
       checkInCloseUTC: iso(depart - 2 * HOUR),
       segments: [{
         segmentNum: 0, origin: from, destination: to, flightNumber, isCancelled: false,

@@ -193,7 +193,12 @@ export async function fetchBoardingPass(
     throw httpError(`boardingpasses failed: ${response.status}`, response.status);
   }
 
-  return response.json();
+  try {
+    return await response.json();
+  } catch {
+    // The parser's own message quotes the body, and this one carries names and barcodes.
+    throw httpError("boardingpasses returned something other than JSON", response.status);
+  }
 }
 
 /**

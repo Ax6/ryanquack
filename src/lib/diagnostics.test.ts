@@ -25,7 +25,7 @@ const SEED_CUSTOMER_ID = "cust-0d41d8cd98f0";
 const SEED_ORIGIN = "STN";
 const SEED_DESTINATION = "DUB";
 const SEED_FLIGHT = "FR1000";
-const SEED_DATE = "2026-09-22T06:00:00Z";
+const SEED_DATE = "2099-09-22T06:00:00Z";
 
 const CHROME_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7390.55 Safari/537.36";
 
@@ -260,7 +260,7 @@ const PASSES = [
     name: { title: "MR", first: SEED_FIRST, last: SEED_LAST },
     seat: { designator: "12B" },
     flight: { carrierCode: "FR", number: "1000", label: "FR 1000", operatedBy: "" },
-    departure: { code: SEED_ORIGIN, name: "London Stansted", date: "2026-09-22T07:00:00", dateUTC: SEED_DATE },
+    departure: { code: SEED_ORIGIN, name: "London Stansted", date: "2099-09-22T07:00:00", dateUTC: SEED_DATE },
     arrival: { code: SEED_DESTINATION },
     docNationality: "GBR",
   },

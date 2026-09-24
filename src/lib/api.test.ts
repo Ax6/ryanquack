@@ -390,6 +390,25 @@ describe("Boarding pass chunking", () => {
     expect(visits[1].error).toContain("boardingpasses failed: 500");
   });
 
+  it("should not quote a boarding-pass body it could not parse", async () => {
+    // This body is the one with names and barcodes in it, and the error goes in the report.
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => { throw new SyntaxError('Unexpected token \'M\', "M1DOE/JANE EABC123" is not valid JSON'); },
+    });
+    const visits: ChunkVisit[] = [];
+
+    await expect(fetchBoardingPassesInChunks(
+      { customerId: "123", bookingIds: [1], xAuthToken: "token" },
+      MOCK_URL,
+      mockFetch as any,
+      (visit) => visits.push(visit)
+    )).rejects.toThrow("boardingpasses returned something other than JSON");
+
+    expect(visits[0].error).not.toContain("DOE");
+  });
+
   it("should give up on a 403, because the session is what failed", async () => {
     const mockFetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [{ pnr: "A" }] })

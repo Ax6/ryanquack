@@ -223,6 +223,18 @@ export function bookingSource(item: OrderItem): BookingSource {
   return "none";
 }
 
+/**
+ * Ryanair opens free check-in 24 hours before departure. The listing's
+ * `checkInFreeAllocateOpenUtcDate` looks like it names that moment but comes a
+ * day earlier, so the window is worked out from the departure instead.
+ */
+const FREE_CHECKIN_OPENS_BEFORE_MS = 24 * 60 * 60 * 1000;
+
+function freeCheckInOpens(departUTC: string | undefined): string | undefined {
+  const departs = Date.parse(departUTC ?? "");
+  return Number.isFinite(departs) ? new Date(departs - FREE_CHECKIN_OPENS_BEFORE_MS).toISOString() : undefined;
+}
+
 function flightsFromRawBooking(raw: RawBooking): FlightSummary[] {
   return (raw.flights ?? []).flatMap((flight) => {
     const checkin = classifyLeg(legStatuses(raw, flight.journeyNum));
@@ -240,7 +252,7 @@ function flightsFromRawBooking(raw: RawBooking): FlightSummary[] {
       allCheckedIn: checkin.allCheckedIn,
       checkInOpenUTC: flight.checkInOpenUTC,
       checkInCloseUTC: flight.checkInCloseUTC,
-      checkInFreeOpenUTC: flight.checkInFreeAllocateOpenUtcDate,
+      checkInFreeOpenUTC: freeCheckInOpens(flight.times?.departUTC),
       hasSeat: hasSeatOn(raw, flight.journeyNum),
     }];
   });
@@ -250,9 +262,10 @@ function flightsFromRawBooking(raw: RawBooking): FlightSummary[] {
  * The same booking as `payload.booking` describes it, for an item whose
  * `rawBooking` Ryanair failed to load (`rawBookingFailure`). It carries the
  * itinerary but no check-in records, so the booking is asked about and, failing
- * a pass, listed as upcoming.
+ * a pass, listed as upcoming. With no record to say a leg has flown, its date
+ * has to.
  */
-function flightsFromPayload(item: OrderItem): FlightSummary[] {
+function flightsFromPayload(item: OrderItem, now: number): FlightSummary[] {
   const booking = item.payload?.booking;
   const bookingId = Number(booking?.bookingId);
   if (!booking || !Number.isFinite(bookingId)) return [];
@@ -262,6 +275,7 @@ function flightsFromPayload(item: OrderItem): FlightSummary[] {
     const first = segments[0];
     const last = segments[segments.length - 1];
     if (!first) return [];
+    if (Date.parse(first.departureTime ?? "") < now) return [];
 
     return [{
       bookingId,
@@ -285,7 +299,7 @@ function itemBookingId(item: OrderItem): number {
  * One row per upcoming leg. A booking repeated across two pages, which a cursor
  * over a list that changed under it can do, is read once.
  */
-export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[] {
+export function extractFlightsFromOrders(orders: OrderResponse, now = Date.now()): FlightSummary[] {
   if (!orders || !orders.items) return [];
 
   const seen = new Set<number>();
@@ -298,7 +312,7 @@ export function extractFlightsFromOrders(orders: OrderResponse): FlightSummary[]
 
     return item.rawBooking?.flights?.length
       ? flightsFromRawBooking(item.rawBooking)
-      : flightsFromPayload(item);
+      : flightsFromPayload(item, now);
   });
 
   return sortFlightsByDeparture(flights);
@@ -450,8 +464,6 @@ export interface OrderFlight {
   times?: { departUTC: string; arriveUTC?: string };
   checkInOpenUTC?: string;
   checkInCloseUTC?: string;
-  /** When free check-in opens; `checkInOpenUTC` is the paid-seat window. */
-  checkInFreeAllocateOpenUtcDate?: string;
 }
 
 export interface PayloadSegment {
