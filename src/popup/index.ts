@@ -7,7 +7,6 @@
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  */
-import bwipjs from "bwip-js";
 import browser from "webextension-polyfill";
 import { downloadPass, fetchGoogleWalletToken } from "../lib/api";
 import { mapWithConcurrency, retry } from "../lib/concurrency";
@@ -17,6 +16,29 @@ import type { BoardingPass, DownloadPayload, FlightSummary } from "../lib/ryanai
 import type { CachedPasses, DiagnosticReport, PassesResult, RyqMessage } from "../lib/messages";
 import { buildZip } from "../lib/zip";
 import "./popup.css";
+
+// bwip-js is ~97% of the popup bundle; load it after passes render.
+type BwipJs = typeof import("bwip-js");
+let barcodes: BwipJs | null = null;
+let barcodesLoading: Promise<BwipJs> | null = null;
+
+function loadBarcodes(): Promise<BwipJs> {
+  barcodesLoading ??= import("bwip-js")
+    .then((module) => {
+      barcodes = (module as unknown as { default?: BwipJs }).default ?? module;
+      return barcodes;
+    })
+    .catch((error: unknown) => {
+      barcodesLoading = null;
+      throw error;
+    });
+  return barcodesLoading;
+}
+
+function requireBarcodes(): BwipJs {
+  if (!barcodes) throw new Error("the barcode renderer is still loading");
+  return barcodes;
+}
 
 const statusEl = document.getElementById("status") as HTMLElement;
 const passesEl = document.getElementById("passes") as HTMLElement;
@@ -159,6 +181,8 @@ function drawNoBarcodeNotice(
 }
 
 async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement> {
+  if (hasBarcode(pass)) await loadBarcodes();
+
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas context not supported");
@@ -255,7 +279,7 @@ async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement
   } else {
     // bwip-js renders to its own canvas, which we then draw into this one.
     const aztecCanvas = document.createElement("canvas");
-    bwipjs.toCanvas(aztecCanvas, {
+    requireBarcodes().toCanvas(aztecCanvas, {
       bcid: "azteccode",
       text: barcode,
       scale: 4, // Higher scale for the large image
@@ -405,7 +429,7 @@ function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
   }
 
   const canvas = document.createElement("canvas");
-  bwipjs.toCanvas(canvas, {
+  requireBarcodes().toCanvas(canvas, {
     bcid: "azteccode",
     text: barcode,
     scale: 3,
@@ -423,7 +447,7 @@ function renderAztec(container: HTMLElement, text: string | null | undefined) {
   }
 
   const canvas = document.createElement("canvas");
-  bwipjs.toCanvas(canvas, {
+  requireBarcodes().toCanvas(canvas, {
     bcid: "azteccode",
     text,
     scale: 3,
@@ -902,6 +926,7 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
           }
 
           try {
+            if (hasBarcode(pass)) await loadBarcodes();
             renderTicketDetails(outputBox, pass);
             button.textContent = "Hide Ticket";
           } catch (error) {
@@ -1043,6 +1068,7 @@ function renderList(result: PassesResult): FlightSummary[] {
   if (passes.length > 0) {
     renderPasses(passes, downloadPayloads);
     renderBulkActions(passes, downloadPayloads);
+    loadBarcodes().catch((error: unknown) => console.error("Barcode renderer failed to load", error));
   }
   renderSearchBar(passes, upcoming);
   if (upcoming.length > 0) renderFlights(upcoming);
@@ -1374,7 +1400,7 @@ function renderPrintAztec(slot: HTMLElement, pass: BoardingPass) {
 
   try {
     const canvas = document.createElement("canvas");
-    bwipjs.toCanvas(canvas, {
+    requireBarcodes().toCanvas(canvas, {
       bcid: "azteccode",
       text: String(pass.barcode),
       scale: PRINT_AZTEC_SCALE,
@@ -1447,6 +1473,15 @@ function visiblePasses(passes: BoardingPass[]): BoardingPass[] {
 
 /** Builds an off-screen sheet of cards, prints it, and takes it back down after. */
 function printPasses(passes: BoardingPass[]) {
+  // Normally loaded by the time a pass is on screen. Printing stays synchronous
+  // once it is, because window.print() needs the click's user activation.
+  if (!barcodes) {
+    loadBarcodes()
+      .then(() => printPasses(passes))
+      .catch((error: unknown) => setStatus(`Could not load the barcode renderer: ${errorText(error)}`));
+    return;
+  }
+
   // A sheet stranded by a missed `afterprint` would otherwise print twice.
   document.getElementById(PRINT_SHEET_ID)?.remove();
 
