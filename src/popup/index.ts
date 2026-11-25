@@ -17,11 +17,7 @@ import type { CachedPasses, DiagnosticReport, PassesResult, RyqMessage } from ".
 import { buildZip } from "../lib/zip";
 import "./popup.css";
 
-/**
- * bwip-js carries every symbology it supports, which is most of the popup's
- * JavaScript, and nothing on the list needs a barcode. It starts loading once
- * the passes are on screen, so it is ready before anyone can ask for one.
- */
+// bwip-js is ~97% of the popup bundle; load it after passes render.
 type BwipJs = typeof import("bwip-js");
 let barcodes: BwipJs | null = null;
 let barcodesLoading: Promise<BwipJs> | null = null;
@@ -29,19 +25,16 @@ let barcodesLoading: Promise<BwipJs> | null = null;
 function loadBarcodes(): Promise<BwipJs> {
   barcodesLoading ??= import("bwip-js")
     .then((module) => {
-      // The package declares `export =`; the browser build is an ES module.
       barcodes = (module as unknown as { default?: BwipJs }).default ?? module;
       return barcodes;
     })
     .catch((error: unknown) => {
-      // A failed load is retried by the next caller rather than cached.
       barcodesLoading = null;
       throw error;
     });
   return barcodesLoading;
 }
 
-/** The loaded renderer. Throws rather than drawing nothing, so callers report it. */
 function requireBarcodes(): BwipJs {
   if (!barcodes) throw new Error("the barcode renderer is still loading");
   return barcodes;
@@ -188,7 +181,7 @@ function drawNoBarcodeNotice(
 }
 
 async function drawTicketToCanvas(pass: BoardingPass): Promise<HTMLCanvasElement> {
-  await loadBarcodes();
+  if (hasBarcode(pass)) await loadBarcodes();
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -520,7 +513,6 @@ const passActions: PassAction[] = [
     id: "qr",
     label: "Show Ticket",
     handler: async (_payload, pass, elements) => {
-      await loadBarcodes();
       renderAztec(elements.outputBox, pass.barcode);
       elements.outputBox.classList.remove("pass-barcode");
     }
@@ -934,7 +926,7 @@ function renderPasses(passes: BoardingPass[], payloads: DownloadPayload[]) {
           }
 
           try {
-            await loadBarcodes();
+            if (hasBarcode(pass)) await loadBarcodes();
             renderTicketDetails(outputBox, pass);
             button.textContent = "Hide Ticket";
           } catch (error) {
