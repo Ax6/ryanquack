@@ -104,10 +104,14 @@ npm run package
 
 ### ✅ Testing
 
-Use **Vitest** to ensure logic is sound.
+Use **Vitest** for unit tests and **Playwright + Selenium** for automated end-to-end tests across Chrome, Firefox, and WebKit:
 
 ```bash
+# Unit tests
 npm test
+
+# End-to-end tests (builds mock bundles into dist/{chrome,firefox,safari}; requires Firefox and Python 3)
+npm run test:e2e
 ```
 
 ## 🏗️ Architecture

@@ -21,6 +21,7 @@ it("ships Chrome and Firefox with downloads and matching versions", () => {
   expect(chrome.permissions).toContain("downloads");
   expect(firefox.permissions).toContain("downloads");
   expect(firefox.version).toBe(chrome.version);
+  expect(firefox.host_permissions).toEqual(chrome.host_permissions);
 });
 
 it("ships Safari with Chrome's version, hosts, content scripts and action, without downloads", () => {

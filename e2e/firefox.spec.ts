@@ -1,17 +1,11 @@
 import { expect, test as base } from "@playwright/test";
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { Builder, By, until, type WebDriver } from "selenium-webdriver";
 import firefox from "selenium-webdriver/firefox.js";
-import { expectPassZip, expectPkpass, expectPng } from "./downloads";
+import { expectPassZip, expectPkpass, expectPng, firstPkpass, firstPng } from "./downloads";
 
-interface FirefoxFixture {
-  driver: WebDriver;
-  popupUrl: string;
-}
-
-const test = base.extend<FirefoxFixture>({
-  popupUrl: "",
+const test = base.extend<{ driver: WebDriver }>({
   driver: async ({}, use, info) => {
     // Marionette requires system access to read Firefox's dynamically assigned
     // moz-extension:// UUID for the temporary add-on and grant MV3 host origins.
@@ -19,6 +13,9 @@ const test = base.extend<FirefoxFixture>({
 
     const downloadPath = info.outputPath("downloads");
     mkdirSync(downloadPath, { recursive: true });
+
+    const manifestPath = resolve("dist/firefox/manifest.json");
+    const hostPermissions: string[] = JSON.parse(readFileSync(manifestPath, "utf8")).host_permissions ?? [];
 
     const options = new firefox.Options()
       .addArguments("-headless")
@@ -33,25 +30,16 @@ const test = base.extend<FirefoxFixture>({
 
       await driver.setContext(firefox.Context.CHROME);
       const uuid = await driver.executeAsyncScript<string>(`
-        const [addonId, done] = arguments;
+        const [addonId, origins, done] = arguments;
         (async () => {
           const { ExtensionPermissions } = ChromeUtils.importESModule(
             "resource://gre/modules/ExtensionPermissions.sys.mjs"
           );
-          await ExtensionPermissions.add(addonId, {
-            permissions: [],
-            origins: [
-              "https://*.ryanair.com/*",
-              "https://mntappbp.ryanair.com/*",
-              "https://mawbp.ryanair.com/*",
-              "https://mgpbp.ryanair.com/*",
-              "http://localhost:3000/*",
-            ],
-          });
+          await ExtensionPermissions.add(addonId, { permissions: [], origins });
           const uuids = JSON.parse(Services.prefs.getStringPref("extensions.webextensions.uuids", "{}"));
           done(uuids[addonId] || "");
         })().catch((err) => done("ERR:" + String(err)));
-      `, addonId);
+      `, addonId, hostPermissions);
       await driver.setContext(firefox.Context.CONTENT);
 
       if (!uuid || uuid.startsWith("ERR:")) {
@@ -64,7 +52,7 @@ const test = base.extend<FirefoxFixture>({
 
       // Seed Ryanair's session cookie via the extension's own cookies API.
       const payload = Buffer.from(JSON.stringify({ sub: "e2e-customer" })).toString("base64url");
-      await driver.executeAsyncScript(`
+      const cookieErr = await driver.executeAsyncScript<string | null>(`
         const [value, done] = arguments;
         browser.cookies.set({
           url: "https://www.ryanair.com/",
@@ -72,6 +60,7 @@ const test = base.extend<FirefoxFixture>({
           value,
         }).then(() => done(null), (err) => done(String(err)));
       `, `mock.${payload}.mock`);
+      expect(cookieErr).toBeNull();
 
       // Reload so the popup fetches passes with the seeded cookie and attach an error trap.
       await driver.get(popupUrl);
@@ -140,12 +129,16 @@ test("Save Image downloads the passenger's PNG", async ({ driver }) => {
   await clickButtonByText(driver, "Show Ticket");
   await driver.wait(until.elementLocated(By.id("btn-save")), 10_000);
   await driver.findElement(By.id("btn-save")).click();
-  expectPng(await completedExtensionDownload(driver));
+  const file = await completedExtensionDownload(driver);
+  expect(basename(file)).toBe(firstPng);
+  expectPng(file);
 });
 
 test("Download Apple Wallet Pass downloads the passenger's .pkpass", async ({ driver }) => {
   await clickButtonByText(driver, "Download Apple Wallet Pass");
-  expectPkpass(await completedExtensionDownload(driver));
+  const file = await completedExtensionDownload(driver);
+  expect(basename(file)).toBe(firstPkpass);
+  expectPkpass(file);
 });
 
 test("Download All downloads both passengers' PNG and wallet files", async ({ driver }) => {
@@ -167,8 +160,9 @@ test("Add to Google Wallet opens the save tab with the mock token", async ({ dri
   await driver.switchTo().window(newHandle);
   await expect.poll(() => driver.getCurrentUrl(), { timeout: 10_000 })
     .toBe("http://localhost:3000/google-wallet/save/mock-google-wallet-token");
-  const body = await driver.findElement(By.css("body")).getText();
-  expect(body).toContain("Token: mock-google-wallet-token");
+  await expect.poll(async () => {
+    try { return await driver.findElement(By.css("body")).getText(); } catch { return ""; }
+  }, { timeout: 10_000 }).toContain("Token: mock-google-wallet-token");
 });
 
 test("Copy Image succeeds without uncaught popup errors", async ({ driver }) => {
@@ -182,13 +176,14 @@ test("Copy Image succeeds without uncaught popup errors", async ({ driver }) => 
 });
 
 test("shows clickable Ryanair.com login link when logged out", async ({ driver }) => {
-  await driver.executeAsyncScript(`
+  const clearErr = await driver.executeAsyncScript<string | null>(`
     const done = arguments[arguments.length - 1];
     Promise.all([
       browser.cookies.remove({ url: "https://www.ryanair.com/", name: "SESSION_COOKIE" }),
       browser.storage.local.clear(),
     ]).then(() => done(null), (err) => done(String(err)));
   `);
+  expect(clearErr).toBeNull();
   await driver.navigate().refresh();
   await expect.poll(async () => (await driver.findElement(By.id("status")).getText()).trim(), { timeout: 10_000 })
     .toBe("Please log in to Ryanair.com 🔒");
