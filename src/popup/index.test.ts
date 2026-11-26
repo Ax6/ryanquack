@@ -575,4 +575,18 @@ describe("Safari compatibility", () => {
       browser.downloads = originalDownloads;
     }
   });
+
+  it("renders a clickable Ryanair.com link when login is required", async () => {
+    mocks.get.mockResolvedValue({});
+    mocks.sendMessage.mockResolvedValue({ error: "LOGIN_REQUIRED" });
+    await import("./index");
+    await settle();
+
+    const status = document.getElementById("status")!;
+    const link = status.querySelector<HTMLAnchorElement>("a.status-link");
+    expect(status.textContent).toBe("Please log in to Ryanair.com 🔒");
+    expect(link?.href).toBe("https://www.ryanair.com/");
+    expect(link?.target).toBe("_blank");
+    expect(link?.rel).toBe("noopener noreferrer");
+  });
 });

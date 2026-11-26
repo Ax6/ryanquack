@@ -76,8 +76,20 @@ function ensureBcMath() {
 
 ensureBcMath();
 
+const RYANAIR_URL = "https://www.ryanair.com/";
+
 function setStatus(text: string) {
   statusEl.textContent = text;
+}
+
+function setLoginRequiredStatus() {
+  const link = document.createElement("a");
+  link.href = RYANAIR_URL;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.className = "status-link";
+  link.textContent = "Ryanair.com";
+  statusEl.replaceChildren("Please log in to ", link, " 🔒");
 }
 
 function plural(count: number, noun: string, nouns = `${noun}s`): string {
@@ -1167,7 +1179,7 @@ async function fetchPasses() {
     const msg = errorText(error);
     if (msg.includes("LOGIN_REQUIRED")) {
       // Still worth showing after a bulk run: an expired session is why its passes 403'd.
-      whenBulkIdle(() => setStatus("Please log in to Ryanair.com 🔒"));
+      whenBulkIdle(() => setLoginRequiredStatus());
     } else if (msg.includes("NO_PASSES")) {
       whenBulkIdle(() => setStatus("Nothing to quack."));
     } else if (bulkRunning) {

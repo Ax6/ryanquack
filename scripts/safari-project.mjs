@@ -9,7 +9,7 @@
  *   resources and syncs `MARKETING_VERSION`.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const DIST_SAFARI = "dist/safari";
@@ -36,6 +36,40 @@ function patchPbxproj(file, { setDeploymentTargets }) {
   writeFileSync(file, content);
 }
 
+function verifyResourceSync(pbxprojFile, distDir) {
+  const { objects } = JSON.parse(
+    execFileSync("plutil", ["-convert", "json", "-o", "-", pbxprojFile], { encoding: "utf8" }),
+  );
+  const resourcesGroup = Object.values(objects).find(
+    (obj) => obj.isa === "PBXGroup" && obj.name === "Resources" && obj.path === "Shared (Extension)",
+  );
+  if (!resourcesGroup || !Array.isArray(resourcesGroup.children)) {
+    throw new Error(`Could not locate Shared (Extension)/Resources group in ${pbxprojFile}`);
+  }
+  const projectEntries = new Set(
+    resourcesGroup.children.map((id) => {
+      const ref = objects[id];
+      return ref?.name || ref?.path?.replace(/^Resources\//, "");
+    }).filter(Boolean),
+  );
+  const distEntries = new Set(
+    readdirSync(distDir).filter((name) => !name.startsWith(".")),
+  );
+
+  const missingInProject = [...distEntries].filter((name) => !projectEntries.has(name)).sort();
+  const missingInDist = [...projectEntries].filter((name) => !distEntries.has(name)).sort();
+  if (missingInProject.length > 0 || missingInDist.length > 0) {
+    const details = [
+      missingInProject.length ? `missing in project.pbxproj: ${missingInProject.join(", ")}` : null,
+      missingInDist.length ? `missing in ${distDir}: ${missingInDist.join(", ")}` : null,
+    ].filter(Boolean).join("; ");
+    throw new Error(
+      `Safari extension top-level resource drift detected (${details}). ` +
+      `Update ${pbxprojFile} or remove ${SAFARI_DIR}/ and re-run safari:convert.`,
+    );
+  }
+}
+
 if (!existsSync(PBXPROJ)) {
   execFileSync(
     "xcrun",
@@ -57,6 +91,7 @@ if (!existsSync(PBXPROJ)) {
   );
   patchPbxproj(PBXPROJ, { setDeploymentTargets: true });
 } else {
+  verifyResourceSync(PBXPROJ, DIST_SAFARI);
   rmSync(RESOURCES_DIR, { recursive: true, force: true });
   cpSync(DIST_SAFARI, RESOURCES_DIR, { recursive: true });
   patchPbxproj(PBXPROJ, { setDeploymentTargets: false });

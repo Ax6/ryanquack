@@ -113,4 +113,16 @@ describe("Xcode app and extension", () => {
     const after = Array.from(readFileSync(file, "utf8").matchAll(numbers), m => m[1]);
     expect(after).toEqual(Array.from(original.matchAll(numbers), () => "77"));
   });
+
+  it("fails safari:sync if a new top-level file in dist/safari is not tracked in project.pbxproj", () => {
+    const extraFile = join(scratch, "dist/safari/extra-untracked.js");
+    writeFileSync(extraFile, "// drift\n");
+    try {
+      expect(() =>
+        execFileSync("node", ["scripts/safari-project.mjs"], { cwd: scratch, stdio: "pipe" }),
+      ).toThrow(/resource drift detected.*extra-untracked\.js/i);
+    } finally {
+      rmSync(extraFile, { force: true });
+    }
+  });
 });
