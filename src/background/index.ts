@@ -31,21 +31,37 @@ import {
 import type { DiagnosticEnvironment, DiagnosticReport, EndpointLog } from "../lib/diagnostics";
 import { errorText } from "../lib/errors";
 
-async function getTokens(): Promise<Tokens> {
-  const cookie = await browser.cookies.get({
-    url: "https://www.ryanair.com",
-    name: "SESSION_COOKIE"
-  });
+async function getTokens(senderTabId?: number): Promise<Tokens> {
+  const query = { url: "https://www.ryanair.com/", name: "SESSION_COOKIE" };
+  let cookie = await browser.cookies.get(query);
+
+  // Safari Profiles (and Firefox Containers) keep cookies in separate stores;
+  // default cookies.get() only queries the first store.
+  if (!cookie && typeof browser.cookies.getAllCookieStores === "function") {
+    const stores = await browser.cookies.getAllCookieStores();
+    const ordered = [...stores].sort((a, b) => {
+      const aMatch = senderTabId !== undefined && a.tabIds.includes(senderTabId) ? 2 : a.tabIds.length > 0 ? 1 : 0;
+      const bMatch = senderTabId !== undefined && b.tabIds.includes(senderTabId) ? 2 : b.tabIds.length > 0 ? 1 : 0;
+      return bMatch - aMatch;
+    });
+    for (const store of ordered) {
+      cookie = await browser.cookies.get({ ...query, storeId: store.id });
+      if (cookie) break;
+    }
+  }
 
   return {
     xAuthToken: cookie ? cookie.value : null
   };
 }
 
-/** Only Firefox serves extension pages from `moz-extension:`. */
-function detectTarget(): string {
+/** Recognizes extension page URL schemes for Firefox, Safari, and Chrome. */
+export function detectTarget(): string {
   try {
-    return browser.runtime.getURL("").startsWith("moz-extension://") ? "firefox" : "chrome";
+    const url = browser.runtime.getURL("");
+    if (url.startsWith("moz-extension://")) return "firefox";
+    if (url.startsWith("safari-web-extension://")) return "safari";
+    return "chrome";
   } catch {
     return "unknown";
   }
@@ -167,14 +183,16 @@ async function fetchPasses(customerId: string, token: string): Promise<PassesRes
   }
 }
 
-browser.runtime.onMessage.addListener((message: unknown) => {
+browser.runtime.onMessage.addListener((message: unknown, sender: browser.Runtime.MessageSender) => {
   const type = readMessageType(message);
   if (!type) {
     return;
   }
 
+  const senderTabId = sender?.tab?.id;
+
   if (type === "RYQ_GET_TOKENS") {
-    return getTokens();
+    return getTokens(senderTabId);
   }
 
   if (type === "RYQ_GET_DIAGNOSTICS") {
@@ -182,19 +200,21 @@ browser.runtime.onMessage.addListener((message: unknown) => {
   }
 
   if (type === "RYQ_FETCH_BOARDING_PASSES") {
-    return getTokens().then(async (tokens) => {
-      const token = tokens.xAuthToken;
-      if (!token) {
-        throw new Error("LOGIN_REQUIRED");
-      }
+    return getTokens(senderTabId)
+      .then(async (tokens) => {
+        const token = tokens.xAuthToken;
+        if (!token) {
+          throw new Error("LOGIN_REQUIRED");
+        }
 
-      const customerId = decodeCustomerId(token);
-      if (!customerId) {
-        throw new Error("LOGIN_REQUIRED");
-      }
+        const customerId = decodeCustomerId(token);
+        if (!customerId) {
+          throw new Error("LOGIN_REQUIRED");
+        }
 
-      return fetchPasses(customerId, token);
-    });
+        return fetchPasses(customerId, token);
+      })
+      .catch((error: unknown) => ({ error: errorText(error) }));
   }
 
 });

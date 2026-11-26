@@ -1,13 +1,24 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import process from "node:process";
+import { setImmediate } from "node:timers/promises";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { BoardingPass, FlightSummary } from "../lib/ryanair";
 import { buildDownloadPayload } from "../lib/ryanair";
 import type { PassesResult } from "../lib/messages";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), sendMessage: vi.fn(), toCanvas: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
+  sendMessage: vi.fn(),
+  getURL: vi.fn((path: string) => `safari-web-extension://test/${path}`),
+  createTab: vi.fn(),
+  toCanvas: vi.fn(),
+  download: vi.fn(),
+}));
 vi.mock("webextension-polyfill", () => ({ default: {
   storage: { local: { get: mocks.get } },
-  runtime: { sendMessage: mocks.sendMessage },
+  runtime: { sendMessage: mocks.sendMessage, getURL: mocks.getURL },
+  tabs: { create: mocks.createTab },
+  downloads: { download: mocks.download },
 } }));
 vi.mock("bwip-js", () => ({ default: { toCanvas: mocks.toCanvas } }));
 
@@ -105,7 +116,7 @@ describe("diagnostic report dialog", () => {
   const REPORT = { generatedAt: "2026-09-20T12:00:00.000Z", list: { bookings: 128, flights: 138 } };
   const JSON_TEXT = JSON.stringify(REPORT, null, 2);
 
-  let writeText: ReturnType<typeof vi.fn>;
+  let writeText: MockInstance<Clipboard["writeText"]>;
 
   /** Answers each message type the popup sends during a load. */
   function respond(report: unknown) {
@@ -124,12 +135,12 @@ describe("diagnostic report dialog", () => {
       <div id="summary" hidden></div><div id="status"></div><div id="failures"></div></div>`;
     vi.stubGlobal("CACHE_TTL_MS", 3_600_000);
     mocks.get.mockResolvedValue({});
-    writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     respond(REPORT);
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -389,5 +400,179 @@ describe("upcoming flight labels", () => {
     await render([]);
 
     expect((document.getElementById("summary") as HTMLElement).hidden).toBe(true);
+  });
+});
+
+describe("Safari compatibility", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    window.history.replaceState(null, "", "?");
+    document.body.innerHTML = `
+      <div id="bulk-actions"></div><div id="search-bar"></div>
+      <div id="passes"></div>
+      <div id="status-bar"><div id="progress"></div><div id="progress-fill"></div>
+      <div id="summary" hidden></div><div id="status"></div><div id="failures"></div></div>`;
+    vi.stubGlobal("CACHE_TTL_MS", 3_600_000);
+    mocks.get.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses browser.downloads.download when present", async () => {
+    mocks.sendMessage.mockResolvedValue({ passes: [], downloadPayloads: [], flights: [] });
+    mocks.download.mockResolvedValue(1);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock-url");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const { downloadBlob } = await import("./index");
+    await settle();
+
+    await downloadBlob(new Blob(["pkpass"]), "pass.pkpass");
+
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(mocks.download).toHaveBeenCalledWith({
+      url: "blob:mock-url",
+      filename: "pass.pkpass",
+      saveAs: false,
+    });
+    vi.advanceTimersByTime(1000);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
+  });
+
+  it("falls back to <a download> when browser.downloads is unavailable", async () => {
+    mocks.sendMessage.mockResolvedValue({ passes: [], downloadPayloads: [], flights: [] });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:safari-url");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      expect(document.body.contains(this)).toBe(true);
+      expect(this.href).toMatch(/^blob:/);
+      expect(this.download).toBe("pass.pkpass");
+    });
+
+    const browser = (await import("webextension-polyfill")).default as { downloads?: unknown };
+    const originalDownloads = browser.downloads;
+    browser.downloads = undefined;
+    try {
+      const { downloadBlob } = await import("./index");
+      await settle();
+
+      await downloadBlob(new Blob(["pkpass"]), "pass.pkpass");
+
+      expect(mocks.download).not.toHaveBeenCalled();
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      expect(document.body.querySelectorAll("a")).toHaveLength(0);
+      vi.advanceTimersByTime(1000);
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:safari-url");
+    } finally {
+      browser.downloads = originalDownloads;
+    }
+  });
+
+  async function openTicket() {
+    mocks.sendMessage.mockResolvedValue(result("M1BARCODE", "12A"));
+    await import("./index");
+    await settle();
+    document.querySelector<HTMLButtonElement>('button[data-action="qr"]')!.click();
+    await settle();
+  }
+
+  it.each(["save", "copy"])("shows the rendering error when %s image fails", async (action) => {
+    await openTicket();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
+      throw new Error("Ticket canvas unavailable");
+    });
+    vi.spyOn(navigator.clipboard, "write").mockImplementation(async ([item]) => {
+      await item.getType("image/png");
+    });
+
+    document.getElementById(`btn-${action}`)!.click();
+    await settle();
+    expect(document.getElementById("status")!.textContent).toContain("Ticket canvas unavailable");
+  });
+
+  it.each(["missing", "throws"])("handles rejected rendering when ClipboardItem %s", async (mode) => {
+    await openTicket();
+    vi.stubGlobal("ClipboardItem", mode === "missing" ? undefined : class {
+      constructor() { throw new Error("Unsupported clipboard item"); }
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
+      throw new Error("Ticket canvas unavailable");
+    });
+    const status = document.getElementById("status")!;
+    const before = status.textContent;
+    const leaked: unknown[] = [];
+    const record = (reason: unknown) => { leaked.push(reason); };
+    process.on("unhandledRejection", record);
+    try {
+      document.getElementById("btn-copy")!.click();
+      // Node reports orphaned promises after microtasks drain, before the next turn.
+      await setImmediate();
+      expect(status.textContent).toBeTruthy();
+      expect(status.textContent).not.toBe(before);
+      expect(leaked).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+  });
+
+  it("calls navigator.clipboard.write synchronously with a Promise<Blob> on Copy Image", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      scale: vi.fn(),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+      drawImage: vi.fn(),
+      measureText: vi.fn(() => ({ width: 10 })),
+    } as unknown as CanvasRenderingContext2D);
+    const pngBlob = new Blob(["png"], { type: "image/png" });
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((cb) => {
+      cb(pngBlob);
+    });
+    const ClipboardItemMock = vi.fn((items: Record<string, Blob | Promise<Blob>>) => ({ items }));
+    vi.stubGlobal("ClipboardItem", ClipboardItemMock);
+    const write = vi.spyOn(navigator.clipboard, "write").mockResolvedValue(undefined);
+
+    await openTicket();
+
+    document.getElementById("btn-copy")?.click();
+
+    // Must be called synchronously in the click handler before awaiting canvas/blob.
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(ClipboardItemMock).toHaveBeenCalledWith({ "image/png": expect.any(Promise) });
+    const passedPromise = ClipboardItemMock.mock.calls[0][0]["image/png"] as Promise<Blob>;
+    await expect(passedPromise).resolves.toBe(pngBlob);
+
+    await settle();
+    expect(document.getElementById("status")?.textContent).toBe("Copied to clipboard! 📋");
+  });
+
+  it("opens the full-tab view instead of downloading in the Safari toolbar popup", async () => {
+    mocks.getURL.mockImplementation((path: string) => `safari-web-extension://test/${path}`);
+    mocks.createTab.mockResolvedValue({});
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const browser = (await import("webextension-polyfill")).default as { downloads?: unknown };
+    const originalDownloads = browser.downloads;
+    browser.downloads = undefined;
+    try {
+      await openTicket();
+      document.getElementById("btn-save")!.click();
+      await settle();
+
+      expect(mocks.createTab).toHaveBeenCalledWith({
+        url: "safari-web-extension://test/src/popup/popup.html?view=tab",
+      });
+      expect(clickSpy).not.toHaveBeenCalled();
+    } finally {
+      browser.downloads = originalDownloads;
+    }
   });
 });

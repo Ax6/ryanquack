@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const state = vi.hoisted(() => ({
   store: {} as Record<string, unknown>,
   listener: null as ((message: unknown) => Promise<any>) | null,
+  getURL: vi.fn(() => "chrome-extension://x/"),
 }));
 
 // A JWT whose payload is {"sub":"cust-1"}.
@@ -11,7 +12,7 @@ const TOKEN = vi.hoisted(() => `x.${btoa(JSON.stringify({ sub: "cust-1" })).repl
 vi.mock("webextension-polyfill", () => ({ default: {
   cookies: { get: async () => ({ value: TOKEN }) },
   runtime: {
-    getURL: () => "chrome-extension://x/",
+    getURL: state.getURL,
     getManifest: () => ({ version: "0.0.0" }),
     onMessage: { addListener: (fn: any) => { state.listener = fn; } },
   },
@@ -21,7 +22,7 @@ vi.mock("webextension-polyfill", () => ({ default: {
   } },
 } }));
 
-await import("./index");
+const { detectTarget } = await import("./index");
 
 const HOUR = 3600e3;
 const pnr = (i: number) => `PNR${String(i).padStart(3, "0")}`;
@@ -94,10 +95,22 @@ describe("Fetching boarding passes", () => {
       ? new Response("busy", { status: 503 })
       : new Response(JSON.stringify(ids.map((id) => pass(id - 1000))), { status: 200 }));
 
-    await expect(fetchBoardingPasses()).rejects.toThrow("boardingpasses failed: 503");
+    const response = await fetchBoardingPasses();
+    expect(response).toEqual({ error: expect.stringContaining("boardingpasses failed: 503") });
 
     // The popup falls back to this on an error, so it must still hold all 25.
     expect((state.store.cachedPasses as any).passes).toHaveLength(25);
     expect((state.store.cachedPasses as any).cachedAt).toBe(1);
+  });
+});
+
+describe("detectTarget", () => {
+  it.each([
+    ["safari-web-extension://abc/", "safari"],
+    ["moz-extension://abc/", "firefox"],
+    ["chrome-extension://abc/", "chrome"],
+  ])("returns %s -> %s", (url, expected) => {
+    state.getURL.mockReturnValueOnce(url);
+    expect(detectTarget()).toBe(expected);
   });
 });
