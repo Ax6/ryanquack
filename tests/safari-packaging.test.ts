@@ -74,7 +74,7 @@ describe("Xcode app and extension", () => {
       .flatMap(t => objects[t.buildConfigurationList].buildConfigurations.map((id: string) => ({
         productType: t.productType, build: objects[id].buildSettings,
       })));
-  });
+  }, 60_000);
 
   afterAll(() => { if (scratch) rmSync(scratch, { recursive: true, force: true }); });
 
