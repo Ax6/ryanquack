@@ -33,23 +33,35 @@ import { errorText } from "../lib/errors";
 
 async function getTokens(senderTabId?: number): Promise<Tokens> {
   const query = { url: "https://www.ryanair.com/", name: "SESSION_COOKIE" };
-  let cookie = await browser.cookies.get(query);
 
-  // Safari Profiles (and Firefox Containers) keep cookies in separate stores;
-  // default cookies.get() only queries the first store.
-  if (!cookie && typeof browser.cookies.getAllCookieStores === "function") {
+  // Safari Profiles keep cookies in separate stores; default cookies.get() only
+  // queries the first store. Scope this fallback to Safari so Chrome Incognito
+  // and Firefox Containers cannot leak another context's session into cache.
+  if (detectTarget() === "safari" && typeof browser.cookies.getAllCookieStores === "function") {
     const stores = await browser.cookies.getAllCookieStores();
-    const ordered = [...stores].sort((a, b) => {
-      const aMatch = senderTabId !== undefined && a.tabIds.includes(senderTabId) ? 2 : a.tabIds.length > 0 ? 1 : 0;
-      const bMatch = senderTabId !== undefined && b.tabIds.includes(senderTabId) ? 2 : b.tabIds.length > 0 ? 1 : 0;
-      return bMatch - aMatch;
-    });
-    for (const store of ordered) {
-      cookie = await browser.cookies.get({ ...query, storeId: store.id });
-      if (cookie) break;
+    const senderStore = senderTabId !== undefined
+      ? stores.find((store) => store.tabIds.includes(senderTabId))
+      : undefined;
+    if (senderStore) {
+      const senderCookie = await browser.cookies.get({ ...query, storeId: senderStore.id });
+      if (senderCookie) return { xAuthToken: senderCookie.value };
     }
+
+    const defaultCookie = await browser.cookies.get(query);
+    if (defaultCookie) return { xAuthToken: defaultCookie.value };
+
+    const remaining = stores
+      .filter((store) => store.id !== senderStore?.id)
+      .sort((a, b) => (b.tabIds.length > 0 ? 1 : 0) - (a.tabIds.length > 0 ? 1 : 0));
+    for (const store of remaining) {
+      const cookie = await browser.cookies.get({ ...query, storeId: store.id });
+      if (cookie) return { xAuthToken: cookie.value };
+    }
+
+    return { xAuthToken: null };
   }
 
+  const cookie = await browser.cookies.get(query);
   return {
     xAuthToken: cookie ? cookie.value : null
   };

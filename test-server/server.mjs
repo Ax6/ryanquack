@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { buildAccount, passesFor } from "./account.mjs";
 
-const PORT = 3000;
+const HOST = process.env.HOST || "127.0.0.1";
+const PORT = Number(process.env.PORT) || 3000;
 
 let currentScenario = "ACTIVE";
 // "recordLocator|sequenceNumber" of every pass handed out without a barcode, so
@@ -312,6 +313,6 @@ const server = createServer(async (req, res) => {
   res.end("Not Found");
 });
 
-server.listen(PORT, () => {
-  console.log(`Test server running at http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Test server running at http://${HOST}:${PORT}`);
 });

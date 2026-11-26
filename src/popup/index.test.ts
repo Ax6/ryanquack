@@ -468,9 +468,51 @@ describe("Safari compatibility", () => {
       expect(clickSpy).toHaveBeenCalledTimes(1);
       expect(document.body.querySelectorAll("a")).toHaveLength(0);
       vi.advanceTimersByTime(1000);
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(59_000);
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:safari-url");
     } finally {
       browser.downloads = originalDownloads;
+    }
+  });
+
+  it("uses navigator.share on iOS Safari instead of blob: URLs, and falls back to a data: URI", async () => {
+    const originalUA = navigator.userAgent;
+    const originalShare = navigator.share;
+    const originalCanShare = navigator.canShare;
+    Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)", configurable: true });
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+    const share = vi.fn().mockResolvedValue(undefined);
+    const canShare = vi.fn().mockReturnValue(true);
+    Object.defineProperty(navigator, "share", { value: share, configurable: true });
+    Object.defineProperty(navigator, "canShare", { value: canShare, configurable: true });
+
+    const browser = (await import("webextension-polyfill")).default as { downloads?: unknown };
+    const originalDownloads = browser.downloads;
+    browser.downloads = undefined;
+    try {
+      const { downloadBlob } = await import("./index");
+      await settle();
+
+      await downloadBlob(new Blob(["png"], { type: "image/png" }), "ticket.png");
+      expect(share).toHaveBeenCalledTimes(1);
+      expect(createObjectURL).not.toHaveBeenCalled();
+
+      // If share throws NotAllowedError (expired gesture), fall back to data: URI rather than blob:.
+      share.mockRejectedValueOnce(new DOMException("Not allowed", "NotAllowedError"));
+      const clickedHrefs: string[] = [];
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+        clickedHrefs.push(this.href);
+      });
+      await downloadBlob(new Blob(["pkpass"], { type: "application/vnd.apple.pkpass" }), "pass.pkpass");
+      expect(clickedHrefs).toHaveLength(1);
+      expect(clickedHrefs[0]).toMatch(/^data:application\/vnd\.apple\.pkpass;base64,/);
+      expect(createObjectURL).not.toHaveBeenCalled();
+    } finally {
+      browser.downloads = originalDownloads;
+      Object.defineProperty(navigator, "userAgent", { value: originalUA, configurable: true });
+      Object.defineProperty(navigator, "share", { value: originalShare, configurable: true });
+      Object.defineProperty(navigator, "canShare", { value: originalCanShare, configurable: true });
     }
   });
 

@@ -115,7 +115,7 @@ npm test
 *   **Bundler:** [Vite](https://vitejs.dev/) + [@crxjs/vite-plugin](https://crxjs.ai/vite-plugin)
 *   **Framework:** Vanilla TypeScript (No heavy UI frameworks).
 *   **Barcode:** [bwip-js](https://github.com/metafloor/bwip-js) for Aztec rendering.
-*   **Compatibility:** Uses `webextension-polyfill` to support both Chrome and Firefox using standard Promise-based APIs.
+*   **Compatibility:** Uses `webextension-polyfill` to support Chrome, Firefox, and Safari using standard Promise-based APIs.
 
 ## ⚠️ Disclaimer
 

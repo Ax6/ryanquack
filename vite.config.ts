@@ -20,21 +20,28 @@ const manifestSafari = {
 
 const target = process.env.TARGET || "chrome";
 const isMock = process.env.MOCK === "true";
-const manifest =
+const mockOrigin = (process.env.MOCK_ORIGIN || "http://localhost:3000").replace(/\/+$/, "");
+const baseManifest =
   target === "firefox"
     ? manifestFirefox
     : target === "safari"
       ? manifestSafari
       : manifestChrome;
+const manifest = isMock
+  ? {
+      ...baseManifest,
+      host_permissions: [...baseManifest.host_permissions, `${mockOrigin}/*`],
+    }
+  : baseManifest;
 const outDir = `dist/${target}`;
 
 const defines = {
-  API_BOARDING_PASS_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://mntappbp.ryanair.com"),
-  API_DOWNLOAD_PASS_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://mawbp.ryanair.com"),
-  API_GOOGLE_WALLET_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://mgpbp.ryanair.com"),
-  API_ORDERS_URL: JSON.stringify(isMock ? "http://localhost:3000" : "https://services-api.ryanair.com"),
+  API_BOARDING_PASS_URL: JSON.stringify(isMock ? mockOrigin : "https://mntappbp.ryanair.com"),
+  API_DOWNLOAD_PASS_URL: JSON.stringify(isMock ? mockOrigin : "https://mawbp.ryanair.com"),
+  API_GOOGLE_WALLET_URL: JSON.stringify(isMock ? mockOrigin : "https://mgpbp.ryanair.com"),
+  API_ORDERS_URL: JSON.stringify(isMock ? mockOrigin : "https://services-api.ryanair.com"),
   CACHE_TTL_MS: String(isMock ? 60_000 : 60 * 60 * 1000),
-  GOOGLE_WALLET_SAVE_URL: JSON.stringify(isMock ? "http://localhost:3000/google-wallet/save" : "https://pay.google.com/gp/v/save"),
+  GOOGLE_WALLET_SAVE_URL: JSON.stringify(isMock ? `${mockOrigin}/google-wallet/save` : "https://pay.google.com/gp/v/save"),
 };
 
 /**
@@ -86,7 +93,7 @@ export default defineConfig({
     dir: "src",
     // Worktrees checked out inside the repo carry their own copy of the suite,
     // which vitest would otherwise collect alongside the real one.
-    exclude: [...configDefaults.exclude, "**/.claude/**", "e2e/**"],
+    exclude: [...configDefaults.exclude, "**/.claude/**"],
   },
   server: {
     port: 5173,

@@ -475,23 +475,68 @@ async function renderTicketPngBlob(pass: BoardingPass): Promise<Blob> {
   });
 }
 
-/** Saves a blob through the downloads API when available, or an `<a download>` fallback on Safari. */
+function isIos(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function triggerAnchorDownload(href: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not encode file for download"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Saves a blob through the downloads API when available, or Safari-safe fallbacks. */
 export async function downloadBlob(blob: Blob, filename: string) {
+  if (typeof browser.downloads?.download === "function") {
+    const url = URL.createObjectURL(blob);
+    try {
+      await browser.downloads.download({ url, filename, saveAs: false });
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    return;
+  }
+
+  // iOS Safari's download process cannot read blob:safari-web-extension:// URLs
+  // (fails with "WebKitBlobResource error 1"). Prefer the native share sheet,
+  // falling back to an inline data: URI when sharing isn't available or gesture expired.
+  if (isIos()) {
+    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: filename });
+        return;
+      } catch (error: unknown) {
+        if (typeof error === "object" && error !== null && (error as { name?: string }).name === "AbortError") {
+          return;
+        }
+      }
+    }
+    const dataUrl = await blobToDataUrl(blob);
+    triggerAnchorDownload(dataUrl, filename);
+    return;
+  }
+
   const url = URL.createObjectURL(blob);
   try {
-    if (typeof browser.downloads?.download === "function") {
-      await browser.downloads.download({ url, filename, saveAs: false });
-    } else {
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }
+    triggerAnchorDownload(url, filename);
   } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 }
 
