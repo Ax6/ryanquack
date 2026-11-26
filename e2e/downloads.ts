@@ -13,6 +13,10 @@ export function expectPng(file: string) {
   expect(bytes.subarray(-8, -4).toString()).toBe("IEND");
 }
 
+export function expectPkpass(file: string) {
+  expect(readFileSync(file, "utf8")).toBe("DUMMY_PKPASS_DATA");
+}
+
 export function expectPassZip(file: string) {
   expect(readFileSync(file).subarray(0, 4)).toEqual(Buffer.from("504b0304", "hex"));
   // Verify the central directory and every entry's CRC with an independent ZIP reader.

@@ -1,7 +1,7 @@
 import { chromium, expect, test as base, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { expectPassZip, expectPng } from "./downloads";
+import { expectPassZip, expectPkpass, expectPng } from "./downloads";
 
 const test = base.extend({
   page: async ({}, use, info) => {
@@ -66,9 +66,23 @@ test("Save Image downloads the passenger's PNG", async ({ page }) => {
   expectPng(await completedExtensionDownload(page));
 });
 
+test("Download Apple Wallet Pass downloads the passenger's .pkpass", async ({ page }) => {
+  await page.getByRole("button", { name: "Download Apple Wallet Pass" }).first().click();
+  expectPkpass(await completedExtensionDownload(page));
+});
+
 test("Download All downloads both passengers' PNG and wallet files", async ({ page }) => {
   await page.getByRole("button", { name: "Download All Passes" }).click();
   expectPassZip(await completedExtensionDownload(page));
+});
+
+test("Add to Google Wallet opens the save tab with the mock token", async ({ page }) => {
+  const popup = page.context().waitForEvent("page");
+  await page.getByRole("button", { name: "Add to Google Wallet" }).first().click();
+  const walletTab = await popup;
+  await walletTab.waitForLoadState("domcontentloaded");
+  expect(walletTab.url()).toBe("http://localhost:3000/google-wallet/save/mock-google-wallet-token");
+  await expect(walletTab.locator("body")).toContainText("Token: mock-google-wallet-token");
 });
 
 test("Copy Image succeeds without uncaught popup errors", async ({ page }) => {
@@ -76,4 +90,13 @@ test("Copy Image succeeds without uncaught popup errors", async ({ page }) => {
   await page.getByRole("button", { name: "Copy Image" }).click();
   await expect(page.locator("#status")).toContainText("Copied to clipboard");
   expect(await page.pageErrors()).toEqual([]);
+});
+
+test("shows clickable Ryanair.com login link when logged out", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.evaluate(() => chrome.storage.local.clear());
+  await page.reload();
+  await expect(page.locator("#status")).toHaveText("Please log in to Ryanair.com 🔒");
+  const link = page.locator("#status a.status-link");
+  await expect(link).toHaveAttribute("href", "https://www.ryanair.com/");
 });

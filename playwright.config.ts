@@ -5,6 +5,7 @@ export default defineConfig({
   outputDir: "./tmp/playwright",
   projects: [
     { name: "chromium-extension", testMatch: "chromium.spec.ts", use: { browserName: "chromium" } },
+    { name: "firefox-extension", testMatch: "firefox.spec.ts" },
     { name: "webkit-tab", testMatch: "webkit.spec.ts", use: { browserName: "webkit" } },
   ],
   webServer: [
