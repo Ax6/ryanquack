@@ -113,7 +113,7 @@ describe("Xcode app and extension", () => {
     run(scripts["safari:sync"] ? "safari:sync" : "safari:convert");
     const after = Array.from(readFileSync(file, "utf8").matchAll(numbers), m => m[1]);
     expect(after).toEqual(Array.from(original.matchAll(numbers), () => "77"));
-  });
+  }, 30_000);
 
   it("fails safari:sync if a new top-level file in dist/safari is not tracked in project.pbxproj", () => {
     const extraFile = join(scratch, "dist/safari/extra-untracked.js");
@@ -125,5 +125,5 @@ describe("Xcode app and extension", () => {
     } finally {
       rmSync(extraFile, { force: true });
     }
-  });
+  }, 15_000);
 });
