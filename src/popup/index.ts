@@ -76,8 +76,20 @@ function ensureBcMath() {
 
 ensureBcMath();
 
+const RYANAIR_URL = "https://www.ryanair.com/";
+
 function setStatus(text: string) {
   statusEl.textContent = text;
+}
+
+function setLoginRequiredStatus() {
+  const link = document.createElement("a");
+  link.href = RYANAIR_URL;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.className = "status-link";
+  link.textContent = "Ryanair.com";
+  statusEl.replaceChildren("Please log in to ", link, " 🔒");
 }
 
 function plural(count: number, noun: string, nouns = `${noun}s`): string {
@@ -371,50 +383,44 @@ function renderTicketDetails(container: HTMLElement, pass: BoardingPass) {
   const btnCopy = container.querySelector("#btn-copy") as HTMLButtonElement;
   const btnSave = container.querySelector("#btn-save") as HTMLButtonElement;
 
-  const handleExport = async (action: "copy" | "save") => {
+  btnCopy.addEventListener("click", async () => {
     try {
-      const canvas = await drawTicketToCanvas(pass);
-
-      canvas.toBlob(async (blob) => {
-        if (!blob) {
-          setStatus("Export failed 🦆");
-          return;
-        }
-
-        if (action === "copy") {
-          try {
-            await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-            const original = btnCopy.textContent;
-            btnCopy.textContent = getRandomQuack();
-            setStatus("Copied to clipboard! 📋");
-            setTimeout(() => { btnCopy.textContent = original; }, 2000);
-          } catch (err) {
-            console.error("Clipboard write failed", err);
-            setStatus("Copy failed 🦆");
-          }
-        } else {
-          try {
-            await downloadBlob(blob, buildPassFilename(pass, "png"));
-
-            const original = btnSave.textContent;
-            btnSave.textContent = getRandomQuack();
-            setStatus("Image saved! 🖼️");
-            setTimeout(() => { btnSave.textContent = original; }, 2000);
-          } catch (err) {
-            console.error("Download failed", err);
-            setStatus("Save failed 🦆");
-          }
-        }
-      }, "image/png");
+      if (typeof ClipboardItem !== "function") {
+        throw new Error("ClipboardItem is not supported");
+      }
+      // Safari requires navigator.clipboard.write() to be called synchronously
+      // inside the user-activation click handler, passing a Promise<Blob>.
+      const blobPromise = renderTicketPngBlob(pass);
+      // Prevent unhandled rejection if ClipboardItem or write() fails before awaiting the blob.
+      blobPromise.catch(() => {});
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blobPromise })]);
+      const original = btnCopy.textContent;
+      btnCopy.textContent = getRandomQuack();
+      setStatus("Copied to clipboard! 📋");
+      setTimeout(() => { btnCopy.textContent = original; }, 2000);
     } catch (err) {
-      console.error(err);
-      // The bulk path names the reason a render failed, so this one should too.
-      setStatus(`Export failed 🦆 ${errorText(err)}`);
+      console.error("Clipboard write failed", err);
+      setStatus(`Copy failed 🦆 ${errorText(err)}`);
     }
-  };
+  });
 
-  btnCopy.addEventListener("click", () => handleExport("copy"));
-  btnSave.addEventListener("click", () => handleExport("save"));
+  btnSave.addEventListener("click", async () => {
+    if (needsTabForDownload()) {
+      openTabView();
+      return;
+    }
+    try {
+      const blob = await renderTicketPngBlob(pass);
+      await downloadBlob(blob, buildPassFilename(pass, "png"));
+      const original = btnSave.textContent;
+      btnSave.textContent = getRandomQuack();
+      setStatus("Image saved! 🖼️");
+      setTimeout(() => { btnSave.textContent = original; }, 2000);
+    } catch (err) {
+      console.error("Download failed", err);
+      setStatus(`Save failed 🦆 ${errorText(err)}`);
+    }
+  });
 
   const canvasContainer = container.querySelector(".aztec-canvas") as HTMLElement;
   const barcode = hasBarcode(pass) ? String(pass.barcode) : null;
@@ -459,17 +465,86 @@ function renderAztec(container: HTMLElement, text: string | null | undefined) {
   container.appendChild(canvas);
 }
 
-/** Saves a blob through the downloads API, releasing the object URL once the download has started. */
-async function downloadBlob(blob: Blob, filename: string) {
+async function renderTicketPngBlob(pass: BoardingPass): Promise<Blob> {
+  const canvas = await drawTicketToCanvas(pass);
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("Canvas export failed"))),
+      "image/png"
+    );
+  });
+}
+
+function isIos(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function triggerAnchorDownload(href: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not encode file for download"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Saves a blob through the downloads API when available, or Safari-safe fallbacks. */
+export async function downloadBlob(blob: Blob, filename: string) {
+  if (typeof browser.downloads?.download === "function") {
+    const url = URL.createObjectURL(blob);
+    try {
+      await browser.downloads.download({ url, filename, saveAs: false });
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    return;
+  }
+
+  // iOS Safari's download process cannot read blob:safari-web-extension:// URLs
+  // (fails with "WebKitBlobResource error 1"). Prefer the native share sheet,
+  // falling back to an inline data: URI when sharing isn't available or gesture expired.
+  if (isIos()) {
+    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    if (typeof navigator.share === "function" && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: filename });
+        return;
+      } catch (error: unknown) {
+        if (typeof error === "object" && error !== null && (error as { name?: string }).name === "AbortError") {
+          return;
+        }
+      }
+    }
+    const dataUrl = await blobToDataUrl(blob);
+    triggerAnchorDownload(dataUrl, filename);
+    return;
+  }
+
   const url = URL.createObjectURL(blob);
   try {
-    await browser.downloads.download({ url, filename, saveAs: false });
+    triggerAnchorDownload(url, filename);
   } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 }
 
 async function downloadWalletPass(payload: DownloadPayload, pass: BoardingPass) {
+  if (needsTabForDownload()) {
+    openTabView();
+    return;
+  }
   const blob = await downloadPass(payload, API_DOWNLOAD_PASS_URL);
   await downloadBlob(blob, buildPassFilename(pass, "pkpass"));
 }
@@ -845,6 +920,10 @@ function renderBulkActions(passes: BoardingPass[], payloads: DownloadPayload[]) 
   btn.className = "btn-download-all";
   btn.textContent = "Download All Passes";
   btn.addEventListener("click", () => {
+    if (needsTabForDownload()) {
+      openTabView();
+      return;
+    }
     const jobs = Array.from(passesEl.querySelectorAll<HTMLElement>(".pass"))
       .filter((row) => row.style.display !== "none")
       .map((row) => Number(row.dataset.index))
@@ -1104,14 +1183,22 @@ async function fetchPasses() {
 
   // 3. Network Fetch (always)
   try {
-    // The fields are read defensively below, so the response is typed as partial.
-    const res = (await browser.runtime.sendMessage<RyqMessage, PassesResult>({
+    // Safari resolves sendMessage to undefined when a listener rejects, so the
+    // background returns `{ error }` instead of rejecting.
+    const res = (await browser.runtime.sendMessage<RyqMessage, PassesResult | { error: string }>({
       type: "RYQ_FETCH_BOARDING_PASSES",
-    })) as Partial<PassesResult> | undefined;
+    })) as (Partial<PassesResult> & { error?: string }) | undefined;
 
-    const passes = res && res.passes ? res.passes : [];
-    const payloads = res && res.downloadPayloads ? res.downloadPayloads : [];
-    const flights = res && res.flights ? res.flights : [];
+    if (!res) {
+      throw new Error("No response from background worker");
+    }
+    if (res.error) {
+      throw new Error(res.error);
+    }
+
+    const passes = res.passes ?? [];
+    const payloads = res.downloadPayloads ?? [];
+    const flights = res.flights ?? [];
 
     // A bulk run holds row indexes into the list it started with, so a run in
     // progress owns the DOM; the fresh list is applied once it finishes.
@@ -1137,7 +1224,7 @@ async function fetchPasses() {
     const msg = errorText(error);
     if (msg.includes("LOGIN_REQUIRED")) {
       // Still worth showing after a bulk run: an expired session is why its passes 403'd.
-      whenBulkIdle(() => setStatus("Please log in to Ryanair.com 🔒"));
+      whenBulkIdle(() => setLoginRequiredStatus());
     } else if (msg.includes("NO_PASSES")) {
       whenBulkIdle(() => setStatus("Nothing to quack."));
     } else if (bulkRunning) {
@@ -1177,6 +1264,18 @@ function applyViewMode() {
   if (isTabView()) document.body.classList.add("view-tab");
 }
 
+/** Safari cancels <a download> blob navigations inside the toolbar popup; use the tab view. */
+function needsTabForDownload(): boolean {
+  return !isTabView() && typeof browser.downloads?.download !== "function";
+}
+
+function openTabView() {
+  const url = browser.runtime.getURL(POPUP_PAGE_PATH) + TAB_VIEW_QUERY;
+  browser.tabs.create({ url }).catch((error) => {
+    setStatus(`Could not open a tab: ${errorText(error)}`);
+  });
+}
+
 /** An extension page opened by its own extension needs no extra permission. */
 function renderOpenInTabControl() {
   if (isTabView()) return;
@@ -1191,12 +1290,7 @@ function renderOpenInTabControl() {
   button.title = "Open RyanQuack in a full browser tab";
   button.textContent = "Open in tab ↗";
 
-  button.addEventListener("click", () => {
-    const url = browser.runtime.getURL(POPUP_PAGE_PATH) + TAB_VIEW_QUERY;
-    browser.tabs.create({ url }).catch((error) => {
-      setStatus(`Could not open a tab: ${errorText(error)}`);
-    });
-  });
+  button.addEventListener("click", openTabView);
 
   header.appendChild(button);
 }

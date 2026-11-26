@@ -70,6 +70,13 @@ button:disabled {
   line-height: 1.4;
 }
 
+.status-link {
+  color: #073590;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* The count line: what the list holds, so nobody has to count rows. */
 #summary {
   font-size: 11px;
@@ -539,6 +546,7 @@ body.view-tab {
   display: grid;
   grid-template-rows: auto auto auto 1fr auto;
   min-height: 100vh;
+  min-height: 100dvh;
   box-sizing: border-box;
   padding-left: 0;
   padding-right: 0;
@@ -564,10 +572,36 @@ body.view-tab #passes {
   margin-right: auto;
 }
 
-/* Two columns once there is a second pass to sit beside the first. */
-body.view-tab #passes:has(> .pass ~ .pass) {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
+/* Two columns on desktop/tablet once there is a second pass to sit beside the first. */
+@media (min-width: 640px) {
+  body.view-tab #passes:has(> .pass ~ .pass) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
+/* Mobile-friendly tab view (e.g. iPhone Safari). */
+@media (max-width: 639px) {
+  body.view-tab {
+    min-width: 0;
+  }
+
+  body.view-tab .search-input {
+    font-size: 16px;
+  }
+
+  body.view-tab #status-bar {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  body.view-tab .diagnostics-dialog {
+    width: calc(100vw - 24px);
+    max-width: 600px;
+  }
+
+  body.view-tab .diagnostics-actions {
+    flex-wrap: wrap;
+  }
 }
 
 /* The body grid hands this row the leftover height; don't spread into it. */

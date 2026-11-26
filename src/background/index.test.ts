@@ -2,16 +2,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const state = vi.hoisted(() => ({
   store: {} as Record<string, unknown>,
-  listener: null as ((message: unknown) => Promise<any>) | null,
+  listener: null as ((message: unknown, sender?: { tab?: { id?: number } }) => Promise<any>) | null,
+  getURL: vi.fn(() => "chrome-extension://x/"),
+  cookiesGet: vi.fn(),
+  getAllCookieStores: vi.fn(),
 }));
 
 // A JWT whose payload is {"sub":"cust-1"}.
 const TOKEN = vi.hoisted(() => `x.${btoa(JSON.stringify({ sub: "cust-1" })).replace(/=+$/, "")}.y`);
 
 vi.mock("webextension-polyfill", () => ({ default: {
-  cookies: { get: async () => ({ value: TOKEN }) },
+  cookies: {
+    get: (...args: unknown[]) => state.cookiesGet(...args),
+    getAllCookieStores: (...args: unknown[]) => state.getAllCookieStores(...args),
+  },
   runtime: {
-    getURL: () => "chrome-extension://x/",
+    getURL: state.getURL,
     getManifest: () => ({ version: "0.0.0" }),
     onMessage: { addListener: (fn: any) => { state.listener = fn; } },
   },
@@ -21,7 +27,7 @@ vi.mock("webextension-polyfill", () => ({ default: {
   } },
 } }));
 
-await import("./index");
+const { detectTarget } = await import("./index");
 
 const HOUR = 3600e3;
 const pnr = (i: number) => `PNR${String(i).padStart(3, "0")}`;
@@ -67,6 +73,9 @@ const fetchBoardingPasses = () => state.listener!({ type: "RYQ_FETCH_BOARDING_PA
 
 beforeEach(() => {
   for (const key of Object.keys(state.store)) delete state.store[key];
+  state.getURL.mockReset().mockReturnValue("chrome-extension://x/");
+  state.cookiesGet.mockReset().mockResolvedValue({ value: TOKEN });
+  state.getAllCookieStores.mockReset().mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -94,10 +103,86 @@ describe("Fetching boarding passes", () => {
       ? new Response("busy", { status: 503 })
       : new Response(JSON.stringify(ids.map((id) => pass(id - 1000))), { status: 200 }));
 
-    await expect(fetchBoardingPasses()).rejects.toThrow("boardingpasses failed: 503");
+    const response = await fetchBoardingPasses();
+    expect(response).toEqual({ error: expect.stringContaining("boardingpasses failed: 503") });
 
     // The popup falls back to this on an error, so it must still hold all 25.
     expect((state.store.cachedPasses as any).passes).toHaveLength(25);
     expect((state.store.cachedPasses as any).cachedAt).toBe(1);
+  });
+
+  it("prioritizes the sender tab's store over the default store on Safari (Safari Profiles)", async () => {
+    state.getURL.mockReturnValue("safari-web-extension://abc/");
+    const queriedStores: Array<string | undefined> = [];
+    state.cookiesGet.mockImplementation(async (details: { storeId?: string }) => {
+      queriedStores.push(details.storeId);
+      if (details.storeId === undefined) return { value: "default-token" };
+      if (details.storeId === "profile-work") return { value: "work-token" };
+      if (details.storeId === "profile-personal") return { value: "personal-token" };
+      return null;
+    });
+    state.getAllCookieStores.mockResolvedValue([
+      { id: "profile-empty", tabIds: [] },
+      { id: "profile-personal", tabIds: [10] },
+      { id: "profile-work", tabIds: [42] },
+    ]);
+
+    const tokens = await state.listener!({ type: "RYQ_GET_TOKENS" }, { tab: { id: 42 } });
+
+    expect(tokens).toEqual({ xAuthToken: "work-token" });
+    expect(queriedStores).toEqual(["profile-work"]);
+  });
+
+  it("falls back to open cookie stores on Safari when the popup has no sender tab", async () => {
+    state.getURL.mockReturnValue("safari-web-extension://abc/");
+    const queriedStores: Array<string | undefined> = [];
+    state.cookiesGet.mockImplementation(async (details: { storeId?: string }) => {
+      queriedStores.push(details.storeId);
+      if (details.storeId === "profile-personal") return { value: "personal-token" };
+      return null;
+    });
+    state.getAllCookieStores.mockResolvedValue([
+      { id: "profile-empty", tabIds: [] },
+      { id: "profile-personal", tabIds: [10] },
+    ]);
+
+    const tokens = await state.listener!({ type: "RYQ_GET_TOKENS" });
+
+    expect(tokens).toEqual({ xAuthToken: "personal-token" });
+    expect(queriedStores).toEqual([undefined, "profile-personal"]);
+  });
+
+  it.each([
+    "chrome-extension://abc/",
+    "moz-extension://abc/",
+  ])("does not enumerate other cookie stores on %s", async (extensionUrl) => {
+    state.getURL.mockReturnValue(extensionUrl);
+    state.cookiesGet.mockResolvedValue(null);
+    state.getAllCookieStores.mockResolvedValue([{ id: "other-store", tabIds: [1] }]);
+
+    const tokens = await state.listener!({ type: "RYQ_GET_TOKENS" });
+
+    expect(tokens).toEqual({ xAuthToken: null });
+    expect(state.getAllCookieStores).not.toHaveBeenCalled();
+  });
+
+  it("returns { error: 'LOGIN_REQUIRED' } instead of rejecting when no cookie exists in any store", async () => {
+    state.cookiesGet.mockResolvedValue(null);
+    state.getAllCookieStores.mockResolvedValue([{ id: "default", tabIds: [1] }]);
+
+    const response = await fetchBoardingPasses();
+
+    expect(response).toEqual({ error: "LOGIN_REQUIRED" });
+  });
+});
+
+describe("detectTarget", () => {
+  it.each([
+    ["safari-web-extension://abc/", "safari"],
+    ["moz-extension://abc/", "firefox"],
+    ["chrome-extension://abc/", "chrome"],
+  ])("returns %s -> %s", (url, expected) => {
+    state.getURL.mockReturnValueOnce(url);
+    expect(detectTarget()).toBe(expected);
   });
 });

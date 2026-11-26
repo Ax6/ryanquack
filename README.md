@@ -51,12 +51,13 @@ It's lightweight and privacy-focused — your data stays local, never leaving yo
 4.  **Load into Browser:**
     *   **Chrome:** Go to `chrome://extensions`, enable **Developer Mode**, click **Load Unpacked**, and select `dist/chrome`.
     *   **Firefox:** Go to `about:debugging`, click **This Firefox**, then **Load Temporary Add-on**, and select `dist/firefox/manifest.json`.
+    *   **Safari (macOS & iOS):** Requires macOS + Xcode (Safari 16.4+ / iOS 16.4+ / macOS 13.3+). Run `npm run safari:convert` once to generate the universal Xcode project in `safari/RyanQuack/RyanQuack.xcodeproj`, then open it in Xcode to build and run. On subsequent code changes, run `npm run safari:sync` to refresh the extension resources without overwriting your Xcode signing or build number settings.
 
 ---
 
 ## 🛠️ Development
 
-This project uses **Vite**, **TypeScript**, and **Manifest V3** for both Chrome and Firefox.
+This project uses **Vite**, **TypeScript**, and **Manifest V3** for Chrome, Firefox, and Safari.
 
 ### 🧪 Mock Server (The Playground)
 
@@ -75,6 +76,9 @@ Don't have a flight booked? No problem. Find included a test Server to simulate 
 
     # For Firefox
     npm run build:firefox:mock
+
+    # For Safari (then run `node scripts/safari-project.mjs` to sync into safari/)
+    npm run build:safari:mock
     ```
     *These builds automatically point API requests to `localhost:3000`.*
 
@@ -83,12 +87,13 @@ Don't have a flight booked? No problem. Find included a test Server to simulate 
 To build the extension for real-world usage:
 
 ```bash
-# Build for both browsers
+# Build for Chrome and Firefox
 npm run build
 
 # Or specific targets
 npm run build:chrome
 npm run build:firefox
+npm run build:safari
 ```
 
 To package the extension:
@@ -110,7 +115,7 @@ npm test
 *   **Bundler:** [Vite](https://vitejs.dev/) + [@crxjs/vite-plugin](https://crxjs.ai/vite-plugin)
 *   **Framework:** Vanilla TypeScript (No heavy UI frameworks).
 *   **Barcode:** [bwip-js](https://github.com/metafloor/bwip-js) for Aztec rendering.
-*   **Compatibility:** Uses `webextension-polyfill` to support both Chrome and Firefox using standard Promise-based APIs.
+*   **Compatibility:** Uses `webextension-polyfill` to support Chrome, Firefox, and Safari using standard Promise-based APIs.
 
 ## ⚠️ Disclaimer
 
