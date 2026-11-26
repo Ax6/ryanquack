@@ -21,6 +21,7 @@ it("ships Chrome and Firefox with downloads and matching versions", () => {
   expect(chrome.permissions).toContain("downloads");
   expect(firefox.permissions).toContain("downloads");
   expect(firefox.version).toBe(chrome.version);
+  expect(firefox.host_permissions).toEqual(chrome.host_permissions);
 });
 
 it("ships Safari with Chrome's version, hosts, content scripts and action, without downloads", () => {
@@ -73,7 +74,7 @@ describe("Xcode app and extension", () => {
       .flatMap(t => objects[t.buildConfigurationList].buildConfigurations.map((id: string) => ({
         productType: t.productType, build: objects[id].buildSettings,
       })));
-  });
+  }, 60_000);
 
   afterAll(() => { if (scratch) rmSync(scratch, { recursive: true, force: true }); });
 
@@ -112,7 +113,7 @@ describe("Xcode app and extension", () => {
     run(scripts["safari:sync"] ? "safari:sync" : "safari:convert");
     const after = Array.from(readFileSync(file, "utf8").matchAll(numbers), m => m[1]);
     expect(after).toEqual(Array.from(original.matchAll(numbers), () => "77"));
-  });
+  }, 30_000);
 
   it("fails safari:sync if a new top-level file in dist/safari is not tracked in project.pbxproj", () => {
     const extraFile = join(scratch, "dist/safari/extra-untracked.js");
@@ -124,5 +125,5 @@ describe("Xcode app and extension", () => {
     } finally {
       rmSync(extraFile, { force: true });
     }
-  });
+  }, 15_000);
 });

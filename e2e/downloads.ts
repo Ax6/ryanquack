@@ -5,12 +5,17 @@ import { expect } from "@playwright/test";
 const alex = "aaanb3_stn-krk_fr1000_alex_smith_10a";
 const sam = "aaav3j_dub-alc_fr1013_sam_murphy_10a";
 export const firstPng = `${alex}.png`;
+export const firstPkpass = `${alex}.pkpass`;
 const pngSignature = Buffer.from("89504e470d0a1a0a", "hex");
 
 export function expectPng(file: string) {
   const bytes = readFileSync(file);
   expect(bytes.subarray(0, 8)).toEqual(pngSignature);
   expect(bytes.subarray(-8, -4).toString()).toBe("IEND");
+}
+
+export function expectPkpass(file: string) {
+  expect(readFileSync(file, "utf8")).toBe("DUMMY_PKPASS_DATA");
 }
 
 export function expectPassZip(file: string) {
